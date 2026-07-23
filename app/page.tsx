@@ -1,6 +1,20 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  accountFromUser,
+  addNamedItem,
+  addWorkRecord,
+  isSupabaseConfigured,
+  loadWorkspace,
+  replaceProjects,
+  saveReport,
+  saveSourceFileMetadata,
+  signInWithPhone,
+  signUpWithPhone,
+  supabase,
+  updateWorkRecord,
+} from "@/lib/supabase";
 
 type View = "today" | "generate" | "history" | "profile";
 
@@ -11,40 +25,76 @@ const nav: { id: View; label: string; icon: string }[] = [
   { id: "profile", label: "工作档案", icon: "◎" },
 ];
 
-type RecordItem = { id: number; time: string; title: string; project: string; goal: string; polished: boolean };
+type RecordItem = { id: string; time: string; title: string; project: string; goal: string; polished: boolean };
 type ReportItem = { id: string; title: string; date: string; type: "周报" | "月报" | "自定义总结"; status: "已确认" | "草稿"; range: string; count: number };
-type UserAccount = { id: number; name: string; phone: string };
-
-const historyReports: ReportItem[] = [
-  { id: "week-29", title: "7月第3周周报", date: "2026.07.18", type: "周报", status: "已确认", range: "2026.07.13 — 2026.07.19", count: 11 },
-  { id: "month-06", title: "2026年6月月报", date: "2026.07.01", type: "月报", status: "已确认", range: "2026.06.01 — 2026.06.30", count: 34 },
-  { id: "q2-review", title: "Q2 工作复盘", date: "2026.06.30", type: "自定义总结", status: "草稿", range: "2026.04.01 — 2026.06.30", count: 76 },
-  { id: "week-28", title: "7月第2周周报", date: "2026.07.11", type: "周报", status: "已确认", range: "2026.07.06 — 2026.07.12", count: 9 },
-];
-
-const initialRecords: RecordItem[] = [
-  { id: 1, time: "今天 14:30", title: "企业端首页方案迭代与开发对齐", project: "企业端首页改版", goal: "提升核心服务入口使用效率", polished: true },
-  { id: 2, time: "昨天 17:10", title: "补充 AI 开票异常反馈流程", project: "AI 开票", goal: "推动 AI 能力进入真实业务流程", polished: true },
-];
+type UserAccount = { id: string; name: string; phone: string };
 
 export default function Home() {
-  const [accounts, setAccounts] = useState<UserAccount[]>([
-    { id: 1, name: "Hang", phone: "13800138000" },
-    { id: 2, name: "工作小号", phone: "18600001234" },
-  ]);
+  const [accounts, setAccounts] = useState<UserAccount[]>([]);
   const [currentAccount, setCurrentAccount] = useState<UserAccount | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [authHint, setAuthHint] = useState("");
   const [view, setView] = useState<View>("today");
   const [entry, setEntry] = useState("");
-  const [records, setRecords] = useState(initialRecords);
+  const [records, setRecords] = useState<RecordItem[]>([]);
+  const [historyReports, setHistoryReports] = useState<ReportItem[]>([]);
   const [toast, setToast] = useState("");
   const [detail, setDetail] = useState(false);
   const [reportStyle, setReportStyle] = useState("按事项");
   const [activeReport, setActiveReport] = useState<ReportItem | null>(null);
   const [selectedRecord, setSelectedRecord] = useState<RecordItem | null>(null);
   const [showWeeklyRecords, setShowWeeklyRecords] = useState(false);
-  const [projects, setProjects] = useState(["企业端首页改版", "AI 开票", "合规服务体验"]);
-  const [goals, setGoals] = useState(["提升核心服务入口使用效率", "推动 AI 能力进入真实业务流程", "减少跨团队沟通与返工成本"]);
+  const [projects, setProjects] = useState<string[]>([]);
+  const [goals, setGoals] = useState<string[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    async function hydrate(user: Parameters<typeof accountFromUser>[0] | null) {
+      if (!active) return;
+      if (!user) {
+        setCurrentAccount(null);
+        setRecords([]);
+        setProjects([]);
+        setGoals([]);
+        setHistoryReports([]);
+        setAuthLoading(false);
+        return;
+      }
+      const account = accountFromUser(user);
+      setCurrentAccount(account);
+      setAccounts([account]);
+      try {
+        const workspace = await loadWorkspace();
+        if (!active) return;
+        setRecords(workspace.records.map((record) => ({
+          id: record.id,
+          time: formatRecordTime(record.occurred_at),
+          title: record.title,
+          project: record.project || "未关联项目",
+          goal: record.goal || "未关联目标",
+          polished: record.polished,
+        })));
+        setProjects(workspace.projects);
+        setGoals(workspace.goals);
+        setHistoryReports(workspace.reports.map((report) => ({
+          id: report.id,
+          title: report.title,
+          date: report.report_date.replaceAll("-", "."),
+          type: report.report_type,
+          status: report.status,
+          range: `${report.range_start.replaceAll("-", ".")} — ${report.range_end.replaceAll("-", ".")}`,
+          count: report.source_count,
+        })));
+      } catch (error) {
+        flash(authErrorMessage(error));
+      } finally {
+        if (active) setAuthLoading(false);
+      }
+    }
+    supabase.auth.getUser().then(({ data }) => hydrate(data.user));
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => hydrate(session?.user ?? null));
+    return () => { active = false; data.subscription.unsubscribe(); };
+  }, []);
 
   const title = useMemo(() => ({ today: `下午好，${currentAccount?.name || "新朋友"}`, generate: "生成工作报告", history: "历史报告", profile: "工作档案" })[view], [view, currentAccount]);
   const subtitle = useMemo(() => ({
@@ -59,23 +109,23 @@ export default function Home() {
     window.setTimeout(() => setToast(""), 2200);
   }
 
-  function saveEntry() {
+  async function saveEntry() {
     if (!entry.trim()) return flash("先写下一件今天完成的事");
-    setRecords([{ id: Date.now(), time: "刚刚", title: entry.trim(), project: "未关联项目", goal: "未关联目标", polished: true }, ...records]);
-    setEntry("");
-    flash("已保存，AI 已完成价值提炼");
+    try {
+      const record = await addWorkRecord(entry.trim());
+      setRecords([{ id: record.id, time: "刚刚", title: record.title, project: "未关联项目", goal: "未关联目标", polished: record.polished }, ...records]);
+      setEntry("");
+      flash("已保存工作记录");
+    } catch (error) { flash(authErrorMessage(error)); }
   }
 
-  if (!currentAccount) return <AuthScreen accounts={accounts} hint={authHint} onLogin={(phone) => {
-    const matched = accounts.find((item) => item.phone === phone);
-    const account = matched || { id: Date.now(), name: `用户 ${phone.slice(-4)}`, phone };
-    if (!matched) setAccounts([...accounts, account]);
-    setCurrentAccount(account);
+  if (!isSupabaseConfigured) return <main className="auth-page"><section className="auth-panel"><div className="auth-box"><div className="auth-heading"><h2>还差一步配置</h2><p>请为部署环境添加 Supabase 项目地址和 Publishable Key。</p></div></div></section></main>;
+  if (authLoading) return <main className="auth-page"><section className="auth-panel"><div className="auth-box"><div className="auth-heading"><h2>正在加载账号…</h2></div></div></section></main>;
+  if (!currentAccount) return <AuthScreen hint={authHint} onLogin={async (phone, password) => {
+    await signInWithPhone(phone, password);
     setAuthHint("");
-  }} onRegister={(name, phone) => {
-    const account = { id: Date.now(), name: name || `用户 ${phone.slice(-4)}`, phone };
-    setAccounts([...accounts.filter((item) => item.phone !== phone), account]);
-    setCurrentAccount(account);
+  }} onRegister={async (name, phone, password) => {
+    await signUpWithPhone(name, phone, password);
     setAuthHint("");
   }} />;
 
@@ -84,7 +134,7 @@ export default function Home() {
       <aside className="sidebar">
         <button className="brand" onClick={() => setView("today")} aria-label="返回工作台"><span>值</span><b>工作价值助手</b></button>
         <nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "generate") setActiveReport(null); setView(item.id); }}><i>{view === item.id ? "●" : item.icon === "●" ? "○" : item.icon}</i><em>{item.label}</em></button>)}</nav>
-        <button className="week-note" onClick={() => setShowWeeklyRecords(true)}>本周已记录 {records.length + 6} 项工作 <span>查看 ›</span></button>
+        <button className="week-note" onClick={() => setShowWeeklyRecords(true)}>本周已记录 {records.length} 项工作 <span>查看 ›</span></button>
       </aside>
 
       <section className="main-content">
@@ -92,28 +142,37 @@ export default function Home() {
 
         {view === "today" && <>
           <section className="metrics">
-            <button className="metric-card" onClick={() => setShowWeeklyRecords(true)}><span className="purple">本周记录</span><strong>{records.length + 6}</strong><em>查看全部 ›</em></button>
-            <article><span className="green">关联目标</span><strong>3</strong></article>
-            <article><span className="orange">周报完整度</span><strong>{Math.min(100, 70 + records.length * 5)}%</strong></article>
+            <button className="metric-card" onClick={() => setShowWeeklyRecords(true)}><span className="purple">本周记录</span><strong>{records.length}</strong><em>查看全部 ›</em></button>
+            <article><span className="green">关联目标</span><strong>{goals.length}</strong></article>
+            <article><span className="orange">周报完整度</span><strong>{records.length ? Math.min(100, 40 + records.length * 10) : 0}%</strong></article>
           </section>
           <section className="card quick"><h2>快速记录</h2><textarea value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="今天完成了什么？推进了什么？解决了什么问题？\n例如：修改企业端首页方案，和开发确认了卡片展示逻辑。" /><div className="actions"><button className="secondary" onClick={() => setDetail(!detail)}>＋ 补充更多信息</button><button className="primary" onClick={saveEntry}>保存并提炼</button></div>{detail && <div className="details"><select aria-label="关联项目"><option>企业端首页改版</option><option>AI 开票</option><option>其他项目</option></select><input placeholder="补充结果或数据（可选）" /></div>}</section>
           <section className="card recent"><div className="section-title"><h2>最近记录</h2><span>点击记录查看详情</span></div>{records.slice(0, 4).map((record) => <button className="record-row" key={record.id} onClick={() => setSelectedRecord(record)}><time>{record.time}</time><div><b>{record.title}</b><p>{record.project === "未关联项目" ? "待关联目标或项目" : `关联项目 · ${record.project}`}</p></div><span className="status">{record.polished ? "已提炼" : "待润色"}</span><i aria-hidden="true">›</i></button>)}</section>
         </>}
 
-        {view === "generate" && <ReportBuilder report={activeReport} records={records} projects={projects} reportStyle={reportStyle} setReportStyle={setReportStyle} onSave={() => { flash(`${activeReport?.type || "周报"}已保存`); setView("history"); }} />}
-        {view === "history" && <History onOpen={(report) => { setActiveReport(report); setReportStyle("按事项"); setView("generate"); }} />}
-        {view === "profile" && <Profile projects={projects} setProjects={setProjects} account={currentAccount} accounts={accounts} onSwitch={(account) => { setCurrentAccount(account); flash(`已切换至 ${account.name}`); }} onAddAccount={() => { setAuthHint("登录另一个账号，完成后会自动切换"); setCurrentAccount(null); }} onLogout={() => { setAuthHint("已安全退出当前账号"); setCurrentAccount(null); }} onDone={() => flash("工作档案已更新")} onFlash={flash} />}
+        {view === "generate" && <ReportBuilder report={activeReport} records={records} projects={projects} reportStyle={reportStyle} setReportStyle={setReportStyle} onSave={async () => {
+          const range = activeReport?.range || currentWeekRange();
+          const [rangeStart, rangeEnd] = range.split(" — ").map((item) => item.replaceAll(".", "-"));
+          try {
+            await saveReport({ id: activeReport?.id, title: activeReport?.title || "本周工作周报", reportType: activeReport?.type || "周报", status: "已确认", rangeStart, rangeEnd, sourceCount: records.length });
+            const workspace = await loadWorkspace();
+            setHistoryReports(workspace.reports.map((report) => ({ id: report.id, title: report.title, date: report.report_date.replaceAll("-", "."), type: report.report_type, status: report.status, range: `${report.range_start.replaceAll("-", ".")} — ${report.range_end.replaceAll("-", ".")}`, count: report.source_count })));
+            flash(`${activeReport?.type || "周报"}已保存`); setView("history");
+          } catch (error) { flash(authErrorMessage(error)); }
+        }} />}
+        {view === "history" && <History reports={historyReports} onOpen={(report) => { setActiveReport(report); setReportStyle("按事项"); setView("generate"); }} />}
+        {view === "profile" && <Profile projects={projects} setProjects={async (items) => { try { await replaceProjects(items); setProjects(items); } catch (error) { flash(authErrorMessage(error)); } }} account={currentAccount} accounts={accounts} onSwitch={() => undefined} onAddAccount={async () => { await supabase.auth.signOut(); setAuthHint("登录另一个账号，完成后会自动切换"); }} onLogout={async () => { await supabase.auth.signOut(); setAuthHint("已安全退出当前账号"); }} onDone={() => flash("工作档案已更新")} onFlash={flash} />}
       </section>
 
       <nav className="bottom-nav">{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "generate") setActiveReport(null); setView(item.id); }}><i>{item.icon}</i><span>{item.label.replace("今日工作台", "工作台").replace("生成报告", "生成").replace("历史报告", "历史").replace("工作档案", "档案")}</span></button>)}</nav>
-      {selectedRecord && <RecordDrawer record={selectedRecord} projects={projects} goals={goals} onAddProject={(value) => setProjects([...projects, value])} onAddGoal={(value) => setGoals([...goals, value])} onClose={() => setSelectedRecord(null)} onSave={(updated) => { setRecords(records.map((item) => item.id === updated.id ? updated : item)); setSelectedRecord(null); flash("记录已更新"); }} />}
-      {showWeeklyRecords && <WeeklyRecords records={records} total={records.length + 6} onClose={() => setShowWeeklyRecords(false)} onOpen={(record) => { setShowWeeklyRecords(false); setSelectedRecord(record); }} />}
+      {selectedRecord && <RecordDrawer record={selectedRecord} projects={projects} goals={goals} onAddProject={async (value) => { await addNamedItem("projects", value); setProjects([...projects, value]); }} onAddGoal={async (value) => { await addNamedItem("goals", value); setGoals([...goals, value]); }} onClose={() => setSelectedRecord(null)} onSave={async (updated) => { try { await updateWorkRecord(updated); setRecords(records.map((item) => item.id === updated.id ? updated : item)); setSelectedRecord(null); flash("记录已更新"); } catch (error) { flash(authErrorMessage(error)); } }} />}
+      {showWeeklyRecords && <WeeklyRecords records={records} total={records.length} onClose={() => setShowWeeklyRecords(false)} onOpen={(record) => { setShowWeeklyRecords(false); setSelectedRecord(record); }} />}
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   );
 }
 
-function AuthScreen({ accounts, hint, onLogin, onRegister }: { accounts: UserAccount[]; hint: string; onLogin: (phone: string) => void; onRegister: (name: string, phone: string) => void }) {
+function AuthScreen({ hint, onLogin, onRegister }: { hint: string; onLogin: (phone: string, password: string) => Promise<void>; onRegister: (name: string, phone: string, password: string) => Promise<void> }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
@@ -121,15 +180,19 @@ function AuthScreen({ accounts, hint, onLogin, onRegister }: { accounts: UserAcc
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!/^1\d{10}$/.test(phone)) return setError("请输入正确的 11 位手机号");
     if (password.length < 6) return setError("密码至少需要 6 位");
     if (mode === "register" && password !== confirmPassword) return setError("两次输入的密码不一致");
-    setError("");
-    if (mode === "register") onRegister(name.trim(), phone);
-    else onLogin(phone);
+    setError(""); setSubmitting(true);
+    try {
+      if (mode === "register") await onRegister(name.trim(), phone, password);
+      else await onLogin(phone, password);
+    } catch (submitError) { setError(authErrorMessage(submitError)); }
+    finally { setSubmitting(false); }
   }
 
   return <main className="auth-page">
@@ -147,9 +210,8 @@ function AuthScreen({ accounts, hint, onLogin, onRegister }: { accounts: UserAcc
         <label>密码<div className="password-input"><input value={password} onChange={(e) => setPassword(e.target.value)} type={showPassword ? "text" : "password"} placeholder="请输入至少 6 位密码" autoComplete={mode === "login" ? "current-password" : "new-password"} /><button type="button" onClick={() => setShowPassword(!showPassword)}>{showPassword ? "隐藏" : "显示"}</button></div></label>
         {mode === "register" && <label>确认密码<input value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} type={showPassword ? "text" : "password"} placeholder="请再次输入密码" autoComplete="new-password" /></label>}
         {error && <p className="auth-error" role="alert">{error}</p>}
-        <button className="primary auth-submit" type="submit">{mode === "login" ? "登录" : "注册并登录"}</button>
+        <button className="primary auth-submit" type="submit" disabled={submitting}>{submitting ? "请稍候…" : mode === "login" ? "登录" : "注册并登录"}</button>
       </form>
-      {mode === "login" && accounts.length > 0 && <div className="remembered"><span>最近登录</span>{accounts.slice(0, 2).map((account) => <button key={account.id} onClick={() => { setPhone(account.phone); setPassword("123456"); }}><i>{account.name.slice(0, 1)}</i><div><b>{account.name}</b><small>{maskPhone(account.phone)}</small></div><em>使用此账号</em></button>)}</div>}
       <div className="auth-switch">{mode === "login" ? "还没有账号？" : "已有账号？"}<button onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }}>{mode === "login" ? "立即注册" : "返回登录"}</button></div>
       <p className="auth-agreement">登录或注册即表示你同意《用户协议》和《隐私政策》</p>
     </div></section>
@@ -157,6 +219,31 @@ function AuthScreen({ accounts, hint, onLogin, onRegister }: { accounts: UserAcc
 }
 
 function maskPhone(phone: string) { return phone.replace(/(\d{3})\d{4}(\d{4})/, "$1 **** $2"); }
+
+function formatRecordTime(value: string) {
+  const date = new Date(value);
+  const now = new Date();
+  const day = date.toDateString() === now.toDateString() ? "今天" : `${date.getMonth() + 1}月${date.getDate()}日`;
+  return `${day} ${date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+}
+
+function currentWeekRange() {
+  const now = new Date();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const format = (date: Date) => date.toISOString().slice(0, 10).replaceAll("-", ".");
+  return `${format(monday)} — ${format(sunday)}`;
+}
+
+function authErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "操作失败，请稍后重试";
+  if (/invalid login credentials/i.test(message)) return "手机号或密码不正确";
+  if (/user already registered/i.test(message)) return "这个手机号已经注册，请直接登录";
+  if (/password/i.test(message) && /characters|length/i.test(message)) return "密码至少需要 6 位";
+  return message;
+}
 
 function RecordDrawer({ record, projects, goals, onAddProject, onAddGoal, onClose, onSave }: { record: RecordItem; projects: string[]; goals: string[]; onAddProject: (value: string) => void; onAddGoal: (value: string) => void; onClose: () => void; onSave: (record: RecordItem) => void }) {
   const [draft, setDraft] = useState(record);
@@ -223,8 +310,8 @@ function SourceRecords({ records, count, range, onClose }: { records: RecordItem
   return <div className="drawer-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><aside className="record-drawer source-drawer" role="dialog" aria-modal="true"><div className="drawer-head"><div><span>{range}</span><h2>原始数据记录 · {count}</h2></div><button className="icon-button" onClick={onClose}>×</button></div><div className="source-note">以下记录是本次报告的生成依据，可返回工作台修改原始内容。</div><div className="drawer-body source-list">{samples.slice(0, Math.min(count, samples.length)).map(item => <article key={item.id}><time>{item.time}</time><b>{item.title}</b><div><span>{item.project}</span><span>{item.goal}</span></div></article>)}{count > samples.length && <div className="older-records">另有 {count - samples.length} 条记录已收起</div>}</div></aside></div>;
 }
 
-function History({ onOpen }: { onOpen: (report: ReportItem) => void }) {
-  return <><div className="filters"><button>全部类型⌄</button><button>2026 年⌄</button><button>全部项目⌄</button><button>全部状态⌄</button></div><section className="card report-list">{historyReports.map((report) => <button key={report.id} onClick={() => onOpen(report)}><span className="doc">▤</span><div><b>{report.title}</b><p>{report.date} · {report.type} · {report.range} · {report.count} 条记录</p></div><em className={report.status === "草稿" ? "draft" : "status"}>{report.status}</em><i>›</i></button>)}</section></>;
+function History({ reports, onOpen }: { reports: ReportItem[]; onOpen: (report: ReportItem) => void }) {
+  return <><div className="filters"><button>全部类型⌄</button><button>2026 年⌄</button><button>全部项目⌄</button><button>全部状态⌄</button></div><section className="card report-list">{reports.length ? reports.map((report) => <button key={report.id} onClick={() => onOpen(report)}><span className="doc">▤</span><div><b>{report.title}</b><p>{report.date} · {report.type} · {report.range} · {report.count} 条记录</p></div><em className={report.status === "草稿" ? "draft" : "status"}>{report.status}</em><i>›</i></button>) : <div className="older-records">还没有历史报告，先生成一份周报吧</div>}</section></>;
 }
 
 type ImportedReport = { id: number; name: string; period: string; items: string[]; projects: string[] };
@@ -234,23 +321,29 @@ function Profile({ projects, setProjects, account, accounts, onSwitch, onAddAcco
   const [uploading, setUploading] = useState(false);
   const [newProject, setNewProject] = useState("");
   const [selectedImport, setSelectedImport] = useState<ImportedReport | null>(null);
-  const [imports, setImports] = useState<ImportedReport[]>([
-    { id: 1, name: "2026年7月第2周周报.docx", period: "07.06 — 07.12", items: ["完成企业端首页核心卡片方案", "补充 AI 开票异常反馈流程", "与开发对齐响应式展示规则"], projects: ["企业端首页改版", "AI 开票"] },
-    { id: 2, name: "2026年7月第1周周报.pdf", period: "06.29 — 07.05", items: ["梳理合规提醒信息优先级", "完成服务日历入口方案"], projects: ["合规服务体验"] },
-  ]);
-  function uploadProfile(file?: File) {
+  const [imports, setImports] = useState<ImportedReport[]>([]);
+  async function uploadProfile(file?: File) {
     if (!file) return;
     if (file.size > 20 * 1024 * 1024) return onFlash("文件超过 20MB，请重新选择");
     setUploading(true);
-    window.setTimeout(() => { setProfileFile(file.name); setUploading(false); onFlash("文件上传成功，已完成内容提取"); }, 500);
+    try {
+      await saveSourceFileMetadata(file, "profile");
+      setProfileFile(file.name);
+      onFlash("已保存文件信息；文件存储和 AI 解析将在下一阶段开放");
+    } catch (error) { onFlash(authErrorMessage(error)); }
+    finally { setUploading(false); }
   }
-  function importReports(files: FileList | null) {
+  async function importReports(files: FileList | null) {
     if (!files?.length) return;
     setUploading(true);
-    window.setTimeout(() => {
-      const added = Array.from(files).map((file, index) => ({ id: Date.now() + index, name: file.name, period: "自动识别时间范围", items: ["提取工作事项与成果表达", "识别关联项目和业务目标", "保留原始周报内容供查看"], projects: projects.slice(0, 2) }));
-      setImports([...added, ...imports]); setUploading(false); onFlash(`成功导入 ${files.length} 份周报`);
-    }, 650);
+    try {
+      const selected = Array.from(files);
+      await Promise.all(selected.map((file) => saveSourceFileMetadata(file, "weekly_report")));
+      const added = selected.map((file, index) => ({ id: Date.now() + index, name: file.name, period: "等待解析", items: ["文件信息已保存", "文件存储和 AI 内容解析将在下一阶段开放"], projects: [] }));
+      setImports([...added, ...imports]);
+      onFlash(`已保存 ${files.length} 份周报的文件信息`);
+    } catch (error) { onFlash(authErrorMessage(error)); }
+    finally { setUploading(false); }
   }
   function addProject() { const value = newProject.trim(); if (!value || projects.includes(value)) return; setProjects([...projects, value]); setNewProject(""); }
   return <>
