@@ -158,7 +158,19 @@ export default function Home() {
 
         {view === "today" && <>
           <section className="card quick"><h2>快速记录</h2><textarea value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="今天完成了什么？推进了什么？解决了什么问题？\n例如：修改企业端首页方案，和开发确认了卡片展示逻辑。" /><div className="entry-options"><QuickProjectPicker value={entryProject} projects={projects} onChange={setEntryProject} onAdd={async (value) => { try { await addNamedItem("projects", value); setProjects((items) => items.includes(value) ? items : [...items, value]); setEntryProject(value); flash("项目已新增并选中"); } catch (error) { flash(authErrorMessage(error)); } }} /><label>修改时间<input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} /></label></div><div className="actions"><span className="save-note">保存原始内容，并生成一版可编辑的 AI 提炼</span><button className="primary" onClick={saveEntry}>保存并提炼</button></div></section>
-          {refinedDraft && <RefineResult draft={refinedDraft} onChange={setRefinedDraft} onKeep={() => setRefinedDraft(null)} onUse={async () => { const selected = refinedDraft.versions[refinedDraft.selected]; const updated = { ...refinedDraft.record, refinedTitle: selected.text, polished: true }; await updateWorkRecord(updated); setRecords(records.map(item => item.id === updated.id ? updated : item)); setRefinedDraft(null); flash("已采用并保存 AI 提炼内容"); }} />}
+          {refinedDraft && <RefineResult draft={refinedDraft} onChange={setRefinedDraft} onKeep={() => setRefinedDraft(null)} onUse={async () => {
+            const selected = refinedDraft.versions[refinedDraft.selected];
+            const updated = { ...refinedDraft.record, refinedTitle: selected.text, polished: true };
+            try {
+              await updateWorkRecord(updated);
+              setRecords((items) => items.map(item => item.id === updated.id ? updated : item));
+              setRefinedDraft(null);
+              flash("已采用并保存 AI 提炼内容");
+            } catch (error) {
+              flash(authErrorMessage(error));
+              throw error;
+            }
+          }} />}
           <section className="card recent"><div className="section-title"><h2>最近记录</h2><span>支持查看、修改和删除</span></div>{records.slice(0, 6).map((record) => <div className="record-row" key={record.id}><button className="record-main" onClick={() => setSelectedRecord(record)}><time>{record.time}</time><div><b>{record.polished && record.refinedTitle ? record.refinedTitle : record.title}</b><p>{record.project === "未关联项目" ? "未选择项目" : `关联项目 · ${record.project}`}</p></div><span className="status">{record.polished ? "已采用提炼" : "保留原文"}</span></button><button className="row-edit" onClick={() => setSelectedRecord(record)} aria-label="修改记录">编辑</button><button className="row-delete" onClick={async () => { if (!window.confirm("确定删除这条记录吗？")) return; await deleteWorkRecord(record.id); setRecords(records.filter(item => item.id !== record.id)); flash("记录已删除"); }} aria-label="删除记录">删除</button></div>)}</section>
         </>}
 
@@ -269,13 +281,23 @@ function authErrorMessage(error: unknown) {
   return message;
 }
 
-function RefineResult({ draft, onChange, onKeep, onUse }: { draft: RefineDraft; onChange: (draft: RefineDraft) => void; onKeep: () => void; onUse: () => void }) {
+function RefineResult({ draft, onChange, onKeep, onUse }: { draft: RefineDraft; onChange: (draft: RefineDraft) => void; onKeep: () => void; onUse: () => Promise<void> }) {
+  const [saving, setSaving] = useState(false);
   const selected = draft.versions[draft.selected];
+  async function saveSelectedVersion() {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await onUse();
+    } catch {
+      setSaving(false);
+    }
+  }
   return <section className="card refine-result">
-    <div className="refine-heading"><div><span>✦ AI 提炼结果</span><h2>选择最适合的一版</h2></div><button className="icon-button" onClick={onKeep}>×</button></div>
+    <div className="refine-heading"><div><span>✦ AI 提炼结果</span><h2>选择最适合的一版</h2></div><button className="icon-button" onClick={onKeep} disabled={saving}>×</button></div>
     <div className="refine-version-tabs">{draft.versions.map((version, index) => <button key={`${version.label}-${index}`} className={draft.selected === index ? "selected" : ""} onClick={() => onChange({ ...draft, selected: index })}>{version.label}</button>)}</div>
     <textarea value={selected.text} onChange={(e) => onChange({ ...draft, versions: draft.versions.map((item, index) => index === draft.selected ? { ...item, text: e.target.value } : item) })} />
-    <div className="refine-actions"><button className="secondary" onClick={onKeep}>保留原内容</button><button className="primary" onClick={onUse}>采用此版本</button></div>
+    <div className="refine-actions"><button className="secondary" onClick={onKeep} disabled={saving}>保留原内容</button><button className="primary" onClick={saveSelectedVersion} disabled={saving}>{saving ? "保存中…" : "采用并保存"}</button></div>
   </section>;
 }
 
@@ -303,7 +325,7 @@ function RecordDrawer({ record, projects, goals, onAddProject, onAddGoal, onClos
         <label>工作内容<textarea value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value, polished: false })} /></label>
         <label>记录日期<input type="date" value={localDateValue(new Date(draft.occurredAt))} onChange={(e) => setDraft({ ...draft, occurredAt: dateAtCurrentTime(e.target.value), time: formatRecordTime(dateAtCurrentTime(e.target.value)) })} /></label>
         <button className="ai-polish" onClick={polish} disabled={polishing}><span>✦</span><div><b>{polishing ? "AI 正在润色…" : "AI 润色"}</b><small>让描述更清晰，更突出工作价值</small></div><i>›</i></button>
-        {(suggestions.length > 0 || draft.refinedTitle) && <div className="ai-suggestion"><div className="suggestion-head"><span>✦ AI 提炼内容</span><small>选择、编辑后采用，不覆盖原文</small></div>{suggestions.length > 0 && <div className="refine-version-tabs">{suggestions.map((item, index) => <button key={`${item.label}-${index}`} className={selectedSuggestion === index ? "selected" : ""} onClick={() => setSelectedSuggestion(index)}>{item.label}</button>)}</div>}<textarea value={suggestions.length ? suggestions[selectedSuggestion].text : draft.refinedTitle} onChange={(e) => suggestions.length ? setSuggestions(suggestions.map((item, index) => index === selectedSuggestion ? { ...item, text: e.target.value } : item)) : setDraft({ ...draft, refinedTitle: e.target.value })} /><div><button className="text-button" onClick={() => { setSuggestions([]); setDraft({ ...draft, polished: false }); }}>保留原文</button><button className="replace-button" onClick={() => { setDraft({ ...draft, refinedTitle: suggestions.length ? suggestions[selectedSuggestion].text : draft.refinedTitle, polished: true }); setSuggestions([]); }}>采用提炼</button></div></div>}
+        {(suggestions.length > 0 || draft.refinedTitle) && <div className="ai-suggestion"><div className="suggestion-head"><span>✦ AI 提炼内容</span><small>选择、编辑后采用，不覆盖原文</small></div>{suggestions.length > 0 && <div className="refine-version-tabs">{suggestions.map((item, index) => <button key={`${item.label}-${index}`} className={selectedSuggestion === index ? "selected" : ""} onClick={() => setSelectedSuggestion(index)}>{item.label}</button>)}</div>}<textarea value={suggestions.length ? suggestions[selectedSuggestion].text : draft.refinedTitle} onChange={(e) => suggestions.length ? setSuggestions(suggestions.map((item, index) => index === selectedSuggestion ? { ...item, text: e.target.value } : item)) : setDraft({ ...draft, refinedTitle: e.target.value })} /><div><button className="text-button" onClick={() => { setSuggestions([]); setDraft({ ...draft, polished: false }); }}>保留原文</button><button className="replace-button" onClick={() => { const updated = { ...draft, refinedTitle: suggestions.length ? suggestions[selectedSuggestion].text : draft.refinedTitle, polished: true }; setDraft(updated); setSuggestions([]); onSave(updated); }}>采用并保存</button></div></div>}
         <div className="drawer-divider" /><div className="relation-title"><h3>关联工作</h3><p>关联后，AI 会在总结时匹配对应的业务价值。</p></div>
         <EditableSelect label="关联目标" value={draft.goal} empty="未关联目标" options={goals} addLabel="＋ 新增目标" onChange={(goal) => setDraft({ ...draft, goal })} onAdd={onAddGoal} />
         <EditableSelect label="关联项目" value={draft.project} empty="未关联项目" options={projects} addLabel="＋ 新增项目" onChange={(project) => setDraft({ ...draft, project })} onAdd={onAddProject} />
