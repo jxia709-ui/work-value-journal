@@ -18,9 +18,12 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",
     "drizzle-orm": "0.45.2",
+    "mammoth": "^1.12.0",
     "next": "16.2.6",
+    "pdf-parse": "^2.4.5",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
@@ -41,5 +44,5 @@
     "wrangler": "4.92.0"
   },
   "type": "module",
-  "displayName": "\u5de5\u4f5c\u4ef7\u503c\u8bb0\u5f55"
+  "displayName": "工作价值记录"
 }
