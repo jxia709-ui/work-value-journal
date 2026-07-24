@@ -1,59 +1,62 @@
 import { NextRequest, NextResponse } from "next/server";
-import mammoth from "mammoth";
-import * as XLSX from "xlsx";
-import { PDFParse } from "pdf-parse";
-
 export const runtime = "nodejs";
 
-type AiTask = "polish" | "weekly_report" | "kpi";
+type AiAction = "refine" | "parse-weekly" | "parse-kpi";
+type AiPayload = {
+  action?: AiAction;
+  content?: string;
+  text?: string;
+  project?: string;
+  goal?: string;
+  goals?: string[];
+  projects?: string[];
+  date?: string;
+  referenceDate?: string;
+  fileName?: string;
+};
 
-async function extractText(file: File) {
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".pdf")) {
-    const parser = new PDFParse({ data: buffer });
-    try {
-      return (await parser.getText()).text;
-    } finally {
-      await parser.destroy();
-    }
-  }
-  if (name.endsWith(".docx")) return (await mammoth.extractRawText({ buffer })).value;
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    const workbook = XLSX.read(buffer);
-    return workbook.SheetNames.map((sheet) => `${sheet}\n${XLSX.utils.sheet_to_csv(workbook.Sheets[sheet])}`).join("\n\n");
-  }
-  return buffer.toString("utf8");
-}
-
-function promptFor(task: AiTask, text: string) {
+function promptFor(action: AiAction, payload: AiPayload) {
   const today = new Date().toISOString().slice(0, 10);
-  if (task === "polish") return {
+  if (action === "refine") return {
     system: "你是工作价值表达助手。保留事实，不虚构数据。只返回 JSON。",
-    user: `将以下工作记录提炼为三个不同侧重点的候选版本。每版一句到两句，分别突出结果、业务价值、推进协作。返回 {"versions":[{"label":"结果导向","text":"..."},{"label":"价值导向","text":"..."},{"label":"推进与协作","text":"..."}]}。\n原文：${text}`,
+    user: `将以下工作记录提炼为三个明显不同的候选版本。每版一到两句，分别突出简洁结果、业务价值、专业协作。返回 {"options":[{"label":"简洁版","text":"..."},{"label":"价值版","text":"..."},{"label":"专业版","text":"..."}]}。
+原文：${payload.content || ""}
+项目：${payload.project || "未关联"}
+目标：${payload.goal || (payload.goals || []).join("、") || "未关联"}
+日期：${payload.date || today}`,
   };
-  if (task === "weekly_report") return {
+  if (action === "parse-weekly") return {
     system: "你是周报结构化助手。只根据原文拆分事项，不合并不同日期，不虚构日期或项目。只返回 JSON。",
-    user: `今天是 ${today}。解析以下周报，按原文逐条拆分工作事项。明确日期转为 YYYY-MM-DD；只有星期几时结合周报周期推断；确实无法判断则 date 返回空字符串。返回 {"period":"原文周期或待确认","projects":["..."],"items":[{"date":"YYYY-MM-DD或空","title":"事项","project":"项目或空","selected":true}]}。原文：\n${text}`,
+    user: `参考日期是 ${payload.referenceDate || today}。解析以下周报，按原文逐条拆分工作事项。明确日期转为 YYYY-MM-DD；只有星期几时结合周报周期推断；确实无法判断则 date 返回 null。返回 {"items":[{"date":"YYYY-MM-DD或null","content":"完整事项","project":"项目或空"}]}。
+文件名：${payload.fileName || ""}
+原文：
+${payload.text || ""}`,
   };
   return {
     system: "你是 KPI/OKR 结构化助手。保持原文事实和数字，不自行补充指标。只返回 JSON。",
-    user: `解析以下 KPI、OKR 或岗位职责。返回可供用户选择的结构化结果：{"role":"岗位或空","items":[{"title":"一级 KPI/目标","description":"原文说明或空","selected":true,"metrics":[{"text":"下级指标/关键结果","selected":true}]}]}。至少返回一个一级项目；没有明确下级指标时 metrics 为空。原文：\n${text}`,
+    user: `解析以下 KPI、OKR 或岗位职责。返回 {"role":"岗位或空","summary":"一句话概括","kpis":[{"title":"一级 KPI/目标","details":["下级指标/关键结果"]}]}。至少返回一个 KPI；没有明确下级指标时 details 为空数组。
+文件名：${payload.fileName || ""}
+原文：
+${payload.text || ""}`,
   };
 }
 
-async function callModel(task: AiTask, text: string) {
+async function callModel(action: AiAction, payload: AiPayload) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error("DeepSeek API Key 尚未配置，请检查 Netlify 环境变量 DEEPSEEK_API_KEY 的生产环境值");
-  const prompt = promptFor(task, text.slice(0, 80_000));
-  const attempts = task === "polish" ? 2 : 1;
+  const prompt = promptFor(action, {
+    ...payload,
+    content: payload.content?.slice(0, 80_000),
+    text: payload.text?.slice(0, 80_000),
+  });
+  const attempts = action === "refine" ? 2 : 1;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: "deepseek-v4-flash",
-        temperature: task === "polish" ? 0.55 : 0.2,
+        temperature: action === "refine" ? 0.55 : 0.2,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: prompt.system },
@@ -75,7 +78,7 @@ async function callModel(task: AiTask, text: string) {
     const content = data.choices?.[0]?.message?.content;
     if (!content) continue;
     const parsed = JSON.parse(content);
-    if (task !== "polish" || hasDistinctVersions(parsed.versions)) return parsed;
+    if (action !== "refine" || hasDistinctVersions(parsed.options)) return parsed;
   }
   throw new Error("AI 未能生成三个明显不同的版本，请重试");
 }
@@ -100,16 +103,14 @@ export async function POST(request: NextRequest) {
       headers: { apikey: supabaseKey, authorization },
     });
     if (!authCheck.ok) return NextResponse.json({ error: "登录已失效，请重新登录" }, { status: 401 });
-    const form = await request.formData();
-    const task = String(form.get("task")) as AiTask;
-    if (!["polish", "weekly_report", "kpi"].includes(task)) {
+    const payload = await request.json() as AiPayload;
+    const action = payload.action;
+    if (!action || !["refine", "parse-weekly", "parse-kpi"].includes(action)) {
       return NextResponse.json({ error: "不支持的 AI 任务" }, { status: 400 });
     }
-    const file = form.get("file");
-    const rawText = String(form.get("text") || "");
-    const text = file instanceof File ? await extractText(file) : rawText;
+    const text = action === "refine" ? String(payload.content || "") : String(payload.text || "");
     if (!text.trim()) return NextResponse.json({ error: "文件中没有识别到可解析文字" }, { status: 422 });
-    return NextResponse.json(await callModel(task, text));
+    return NextResponse.json(await callModel(action, payload));
   } catch (error) {
     const message = error instanceof Error ? error.message : "AI 解析失败";
     return NextResponse.json({ error: message }, { status: 500 });

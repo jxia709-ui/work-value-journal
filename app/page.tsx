@@ -439,7 +439,7 @@ function isDateValue(value: string | null | undefined): value is string {
 async function callAi<T>(action: "refine" | "parse-weekly" | "parse-kpi", payload: Record<string, unknown>): Promise<T> {
   const { data } = await supabase.auth.getSession();
   if (!data.session?.access_token) throw new Error("登录已失效，请重新登录");
-  const response = await fetch("/.netlify/functions/ai", {
+  const response = await fetch("/api/ai", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
