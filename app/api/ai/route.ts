@@ -43,29 +43,49 @@ function promptFor(task: AiTask, text: string) {
 }
 
 async function callModel(task: AiTask, text: string) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const gatewayUrl = process.env.OPENAI_BASE_URL;
-  if (!apiKey && !gatewayUrl) throw new Error("AI 服务尚未启用：请在 Netlify 中启用 AI Gateway，或配置 OPENAI_API_KEY");
-  const baseUrl = (gatewayUrl || "https://api.openai.com/v1").replace(/\/$/, "");
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) throw new Error("DeepSeek API Key 尚未配置，请检查 Netlify 环境变量 DEEPSEEK_API_KEY 的生产环境值");
   const prompt = promptFor(task, text.slice(0, 80_000));
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey || "netlify-ai-gateway"}` },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: prompt.system },
-        { role: "user", content: prompt.user },
-      ],
-    }),
-  });
-  if (!response.ok) throw new Error(`AI 服务返回 ${response.status}`);
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("AI 没有返回可解析内容");
-  return JSON.parse(content);
+  const attempts = task === "polish" ? 2 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const response = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: "deepseek-v4-flash",
+        temperature: task === "polish" ? 0.55 : 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: prompt.system },
+          {
+            role: "user",
+            content: `${prompt.user}${attempt ? "\n上次三个版本过于相似，请重新生成，确保表达重点、句式和信息组织明显不同。" : ""}`,
+          },
+        ],
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      if (response.status === 401) throw new Error("DeepSeek 密钥无效，请检查 DEEPSEEK_API_KEY");
+      if (response.status === 402) throw new Error("DeepSeek 账户余额不足，请充值后重试");
+      if (response.status === 429) throw new Error("DeepSeek 请求过于频繁，请稍后重试");
+      throw new Error(`DeepSeek 服务返回 ${response.status}${detail ? `：${detail.slice(0, 180)}` : ""}`);
+    }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) continue;
+    const parsed = JSON.parse(content);
+    if (task !== "polish" || hasDistinctVersions(parsed.versions)) return parsed;
+  }
+  throw new Error("AI 未能生成三个明显不同的版本，请重试");
+}
+
+function hasDistinctVersions(versions: unknown) {
+  if (!Array.isArray(versions) || versions.length !== 3) return false;
+  const texts = versions.map((version) =>
+    String(version?.text || "").replace(/\s+/g, "").replace(/[，。；：、,.!！?？]/g, ""),
+  );
+  return texts.every((text) => text.length >= 12) && new Set(texts).size === 3;
 }
 
 export async function POST(request: NextRequest) {
