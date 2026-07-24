@@ -497,7 +497,10 @@ function Profile({ projects, setProjects, onImported, account, accounts, onSwitc
     if (!kpiDraft) return;
     const chosen = kpiDraft.items.filter((item) => item.selected);
     if (!chosen.length) return onFlash("请至少选择一项 KPI");
-    setCoreGoal(chosen.map((item) => item.title).join("；"));
+    setCoreGoal(chosen.map((item) => {
+      const metrics = item.metrics.filter((metric) => metric.selected && metric.text.trim()).map((metric) => metric.text.trim());
+      return metrics.length ? `${item.title}：${metrics.join("；")}` : item.title;
+    }).join("\n"));
     if (kpiDraft.role) setRole(kpiDraft.role);
     setKpiDraft(null);
     onFlash(`已将 ${chosen.length} 项 KPI 填入工作档案`);
