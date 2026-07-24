@@ -44,14 +44,15 @@ function promptFor(task: AiTask, text: string) {
 
 async function callModel(task: AiTask, text: string) {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("部署环境缺少 OPENAI_API_KEY");
-  const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+  const gatewayUrl = process.env.OPENAI_BASE_URL;
+  if (!apiKey && !gatewayUrl) throw new Error("AI 服务尚未启用：请在 Netlify 中启用 AI Gateway，或配置 OPENAI_API_KEY");
+  const baseUrl = (gatewayUrl || "https://api.openai.com/v1").replace(/\/$/, "");
   const prompt = promptFor(task, text.slice(0, 80_000));
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey || "netlify-ai-gateway"}` },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
