@@ -31,3 +31,4 @@ jobs:
           git add -A
           git commit -m "Fix report regeneration, cloud sync, and KPI uploads"
           git push
+# trigger
