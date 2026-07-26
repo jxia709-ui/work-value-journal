@@ -1,3 +1,4 @@
+# Source fixes verified by GitHub Actions before production deploy.
 [build]
   command = "npx next build"
   publish = ".next"
