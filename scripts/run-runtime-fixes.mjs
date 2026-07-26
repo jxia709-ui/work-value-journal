@@ -4,12 +4,10 @@ const sourcePath = "scripts/apply-runtime-fixes.mjs";
 const tempPath = "scripts/.apply-runtime-fixes.generated.mjs";
 let source = fs.readFileSync(sourcePath, "utf8");
 
-// The main patch first removes browser cache writes. Keep its later exact-match
-// replacement aligned with that intermediate source state.
-source = source.replaceAll(
-  "        if (currentAccount) writeLocalRecords(currentAccount.id, next);\n",
-  "",
-);
+// The patch script contains a literal `${file.name}` from app/page.tsx inside
+// one of its matching templates. Escape it before importing the generated
+// script so Node does not try to evaluate it in the patcher itself.
+source = source.replaceAll('${file.name}', '\\${file.name}');
 
 fs.writeFileSync(tempPath, source);
 try {
