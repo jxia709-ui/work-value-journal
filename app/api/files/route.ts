@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
-import { PDFParse } from "pdf-parse";
+import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
 
 export const runtime = "nodejs";
 
@@ -10,13 +10,9 @@ async function extractText(file: File) {
   const name = file.name.toLowerCase();
 
   if (name.endsWith(".pdf")) {
-    const parser = new PDFParse({ data: buffer });
-    try {
-      const result = await parser.getText();
-      return result.text;
-    } finally {
-      await parser.destroy();
-    }
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const result = await extractPdfText(pdf, { mergePages: true });
+    return result.text;
   }
 
   if (name.endsWith(".docx")) {
@@ -46,7 +42,7 @@ export async function POST(request: NextRequest) {
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "没有收到可解析的文件" }, { status: 400 });
     }
-    if (!['parse-weekly', 'parse-kpi'].includes(action)) {
+    if (!["parse-weekly", "parse-kpi"].includes(action)) {
       return NextResponse.json({ error: "文件解析任务无效" }, { status: 400 });
     }
     if (file.size > 20 * 1024 * 1024) {
