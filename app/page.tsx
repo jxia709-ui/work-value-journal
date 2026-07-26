@@ -38,22 +38,6 @@ function recordDisplayTitle(record: RecordItem) {
     : record.title;
 }
 
-function localRecordKey(accountId: string) {
-  return `work-value-journal:records:${accountId}`;
-}
-
-function readLocalRecords(accountId: string): RecordItem[] {
-  try {
-    return JSON.parse(window.localStorage.getItem(localRecordKey(accountId)) || "[]") as RecordItem[];
-  } catch {
-    return [];
-  }
-}
-
-function writeLocalRecords(accountId: string, records: RecordItem[]) {
-  window.localStorage.setItem(localRecordKey(accountId), JSON.stringify(records.filter((record) => !record.id.startsWith("demo-"))));
-}
-
 function demoRecords(): RecordItem[] {
   const samples = [
     ["完成企业端首页卡片方案第二轮优化", "企业端首页改版", "提升核心服务入口使用效率"],
@@ -111,6 +95,7 @@ export default function Home() {
       if (!user) {
         setCurrentAccount(null);
         setRecords([]);
+        setReports([]);
         setProjects([]);
         setGoals([]);
         setAuthLoading(false);
@@ -118,7 +103,6 @@ export default function Home() {
       }
       const account = accountFromUser(user);
       setCurrentAccount(account);
-      const localRecords = readLocalRecords(account.id);
       try {
         const workspace = await loadWorkspace();
         if (!active) return;
@@ -132,8 +116,7 @@ export default function Home() {
           goal: record.goal || "未关联目标",
           polished: record.polished,
         }));
-        const mergedRecords = [...localRecords, ...remoteRecords.filter((remote) => !localRecords.some((local) => local.id === remote.id))];
-        setRecords(mergedRecords);
+        setRecords(remoteRecords);
         setProjects(workspace.projects);
         setGoals(workspace.goals);
         setReports(workspace.reports.map((report) => ({
@@ -142,21 +125,15 @@ export default function Home() {
           date: report.report_date,
           type: report.report_type,
           status: report.status,
-          range: `${report.range_start} — ${report.range_end}`,
+          range: report.range_start + " — " + report.range_end,
           count: report.source_count,
         })));
-        if (!mergedRecords.length) {
-          setRecords(demoRecords());
-          setReports(demoReports());
-          setProjects(["企业端首页改版", "AI 开票", "用户研究", "合规服务体验"]);
-          setGoals(["提升核心服务入口使用效率", "推动 AI 能力进入真实业务流程", "减少跨团队沟通与返工成本"]);
-        }
       } catch (error) {
-        setRecords(localRecords.length ? localRecords : demoRecords());
-        setReports(demoReports());
-        setProjects(["企业端首页改版", "AI 开票", "用户研究", "合规服务体验"]);
-        setGoals(["提升核心服务入口使用效率", "推动 AI 能力进入真实业务流程", "减少跨团队沟通与返工成本"]);
-        flash(localRecords.length ? "已加载本机保存的测试记录" : authErrorMessage(error));
+        setRecords([]);
+        setReports([]);
+        setProjects([]);
+        setGoals([]);
+        flash("云端数据加载失败：" + authErrorMessage(error));
       } finally {
         if (active) setAuthLoading(false);
       }
@@ -182,7 +159,6 @@ export default function Home() {
     if (!entry.trim()) return flash("先写下一件今天完成的事");
     const occurredAt = dateAtCurrentTime(entryDate);
     setAiLoading(true);
-    let options: RefinementOption[];
     try {
       const result = await callAi<{ options: RefinementOption[] }>("refine", {
         content: entry.trim(),
@@ -191,38 +167,28 @@ export default function Home() {
         projects,
         date: entryDate,
       });
-      options = result.options.filter((item) => item.text?.trim()).slice(0, 3);
+      const options = result.options.filter((item) => item.text?.trim()).slice(0, 3);
       if (options.length !== 3) throw new Error("AI 未返回完整的三个版本，请重试");
-    } catch (error) {
-      setAiLoading(false);
-      return flash(authErrorMessage(error));
-    }
-    const refinedTitle = options[0].text;
-    try {
+      const refinedTitle = options[0].text;
       const record = await addWorkRecord({ title: entry.trim(), details: refinedTitle, project: entryProject, occurredAt });
-      const item = { id: record.id, time: formatRecordTime(record.occurred_at), occurredAt: record.occurred_at, title: record.title, refinedTitle: record.details || refinedTitle, project: record.project || "未关联项目", goal: "未关联目标", polished: false };
-      setRecords((current) => {
-        const next = [item, ...current];
-        if (currentAccount) writeLocalRecords(currentAccount.id, next);
-        return next;
-      });
+      const item = {
+        id: record.id,
+        time: formatRecordTime(record.occurred_at),
+        occurredAt: record.occurred_at,
+        title: record.title,
+        refinedTitle: record.details || refinedTitle,
+        project: record.project || "未关联项目",
+        goal: record.goal || "未关联目标",
+        polished: false,
+      };
+      setRecords((current) => [item, ...current]);
       setRefinedDraft(item);
       setRefinementOptions(options);
       setSelectedRefinement(0);
       setEntry("");
-      flash("已生成 3 个 AI 提炼版本，请选择");
-    } catch {
-      const item = { id: `local-${crypto.randomUUID()}`, time: formatRecordTime(occurredAt), occurredAt, title: entry.trim(), refinedTitle, project: entryProject || "未关联项目", goal: "未关联目标", polished: false };
-      setRecords((current) => {
-        const next = [item, ...current.filter((record) => !record.id.startsWith("demo-"))];
-        if (currentAccount) writeLocalRecords(currentAccount.id, next);
-        return next;
-      });
-      setRefinedDraft(item);
-      setRefinementOptions(options);
-      setSelectedRefinement(0);
-      setEntry("");
-      flash("已保存到测试环境，刷新后仍会保留");
+      flash("已写入云端，并生成 3 个 AI 提炼版本");
+    } catch (error) {
+      flash("保存失败，数据未写入云端：" + authErrorMessage(error));
     } finally {
       setAiLoading(false);
     }
@@ -236,11 +202,7 @@ export default function Home() {
       const previewItems: WeeklyImportPreview["items"] = [];
       for (const file of selected) {
         await saveSourceFileMetadata(file, "weekly_report").catch(() => null);
-        const text = await extractFileText(file);
-        if (!text.trim()) throw new Error(`${file.name} 未读取到可解析内容`);
-        const parsed = await callAi<{ items: ParsedWeeklyItem[] }>("parse-weekly", {
-          fileName: file.name,
-          text,
+        const parsed = await callAiFile<{ items: ParsedWeeklyItem[] }>("parse-weekly", file, {
           referenceDate: localDateValue(new Date(file.lastModified || Date.now())),
         });
         const items = parsed.items.filter((item) => item.content?.trim());
@@ -266,37 +228,43 @@ export default function Home() {
     if (!selected.length) return flash("请至少选择一条事项");
     if (selected.some((item) => !isDateValue(item.date))) return flash("请为每条已选事项补充有效日期");
     setImportingReports(true);
-    const importedRecords: RecordItem[] = [];
-    for (const item of selected) {
-      const occurredAt = dateAtNoon(item.date!);
-      try {
+    try {
+      const importedRecords: RecordItem[] = [];
+      for (const item of selected) {
+        const occurredAt = dateAtNoon(item.date!);
         const saved = await addWorkRecord({ title: item.content.trim(), details: "", project: item.project || "", occurredAt });
-        importedRecords.push({ id: saved.id, time: formatRecordTime(saved.occurred_at), occurredAt: saved.occurred_at, title: saved.title, refinedTitle: "", project: saved.project || "未关联项目", goal: item.goal || "未关联目标", polished: false });
-      } catch {
-        importedRecords.push({ id: `local-import-${crypto.randomUUID()}`, time: formatRecordTime(occurredAt), occurredAt, title: item.content.trim(), refinedTitle: "", project: item.project || "未关联项目", goal: item.goal || "未关联目标", polished: false });
+        importedRecords.push({
+          id: saved.id,
+          time: formatRecordTime(saved.occurred_at),
+          occurredAt: saved.occurred_at,
+          title: saved.title,
+          refinedTitle: saved.details || "",
+          project: saved.project || "未关联项目",
+          goal: saved.goal || item.goal || "未关联目标",
+          polished: false,
+        });
       }
+      const dates = selected.map((item) => item.date!).sort();
+      const report: ReportItem = {
+        id: "imported-" + Date.now(),
+        title: weeklyImportPreview.fileName.replace(/\.[^.、]+$/, "") || "历史周报",
+        date: dates[dates.length - 1],
+        type: "周报",
+        status: "已确认",
+        range: dates[0] + " — " + dates[dates.length - 1],
+        count: selected.length,
+        imported: true,
+        fileName: weeklyImportPreview.fileName,
+      };
+      setRecords((current) => [...importedRecords, ...current]);
+      setReports((current) => [report, ...current]);
+      setWeeklyImportPreview(null);
+      flash("已写入云端并按日期导入 " + selected.length + " 条事项");
+    } catch (error) {
+      flash("导入失败：" + authErrorMessage(error));
+    } finally {
+      setImportingReports(false);
     }
-    const dates = selected.map((item) => item.date!).sort();
-    const report: ReportItem = {
-      id: `imported-${Date.now()}`,
-      title: weeklyImportPreview.fileName.replace(/\.[^.、]+$/, "") || "历史周报",
-      date: dates[dates.length - 1],
-      type: "周报",
-      status: "已确认",
-      range: `${dates[0]} — ${dates[dates.length - 1]}`,
-      count: selected.length,
-      imported: true,
-      fileName: weeklyImportPreview.fileName,
-    };
-    setRecords((current) => {
-      const next = [...importedRecords, ...current.filter((item) => !item.id.startsWith("demo-"))];
-      if (currentAccount) writeLocalRecords(currentAccount.id, next);
-      return next;
-    });
-    setReports((current) => [report, ...current]);
-    setWeeklyImportPreview(null);
-    setImportingReports(false);
-    flash(`已按日期导入 ${selected.length} 条事项`);
   }
 
   if (!isSupabaseConfigured) return <main className="auth-page"><section className="auth-panel"><div className="auth-box"><div className="auth-heading"><h2>还差一步配置</h2><p>请为部署环境添加 Supabase 项目地址和 Publishable Key。</p></div></div></section></main>;
@@ -320,10 +288,10 @@ export default function Home() {
         <header className="page-header"><div><h1>{title}</h1><p>{subtitle}</p></div>{view === "today" && <button className="primary" onClick={() => { setActiveReport(null); setShowReportBuilder(true); }}>生成工作报告</button>}{view === "history" && <label className="secondary history-import-button">{importingReports ? "正在导入…" : "导入历史周报"}<input type="file" multiple accept=".pdf,.doc,.docx,.txt,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp" onChange={(e) => { void importHistoricalReports(e.target.files); e.currentTarget.value = ""; }} /></label>}{view === "profile" && <div className="compact-account"><span>{currentAccount.name.slice(0, 1)}</span><div><b>{currentAccount.name}</b><small>{maskPhone(currentAccount.phone)}</small></div><button onClick={async () => { await supabase.auth.signOut(); setAuthHint("登录另一个账号，完成后会自动切换"); }}>切换</button><button className="compact-logout" onClick={async () => { await supabase.auth.signOut(); setAuthHint("已安全退出当前账号"); }}>退出</button></div>}</header>
 
         {view === "today" && <>
-          <section className="card quick"><h2>快速记录</h2><textarea value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="今天完成了什么？推进了什么？解决了什么问题？\n例如：修改企业端首页方案，和开发确认了卡片展示逻辑。" /><div className="entry-options"><QuickProjectPicker value={entryProject} projects={projects} onChange={setEntryProject} onAdd={async (value) => { try { await addNamedItem("projects", value); } catch { /* keep the project available for interaction testing */ } setProjects((items) => items.includes(value) ? items : [...items, value]); setEntryProject(value); flash("项目已新增并选中"); }} /><label>修改时间<input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} /></label></div><div className="actions"><span className="save-note">保存原始内容，AI 将生成 3 个侧重点不同的版本</span><button className="primary" disabled={aiLoading} onClick={saveEntry}>{aiLoading ? "AI 正在理解…" : "保存并提炼"}</button></div>{refinedDraft && <div className="quick-ai-result"><div className="quick-original"><span>你的原始输入</span><p>{refinedDraft.title}</p></div><div className="quick-ai-head"><div><span>✦ AI 提炼 · 选择一个版本</span><small>结合项目和目标生成，均可修改</small></div></div><div className="ai-version-tabs">{refinementOptions.map((option, index) => <button key={option.label} className={selectedRefinement === index ? "selected" : ""} onClick={() => { setSelectedRefinement(index); setRefinedDraft({ ...refinedDraft, refinedTitle: option.text }); }}>{option.label}</button>)}</div><textarea value={refinedDraft.refinedTitle} onChange={(e) => setRefinedDraft({ ...refinedDraft, refinedTitle: e.target.value })} /><div className="record-ai-actions"><button className="text-button" onClick={() => setRefinedDraft(null)}>暂不使用</button><button className="replace-button" onClick={async () => { const updated = { ...refinedDraft, polished: true }; try { if (!updated.id.startsWith("local-")) await updateWorkRecord(updated); } catch { /* keep local fallback */ } const next = records.map(item => item.id === updated.id ? updated : item); setRecords(next); writeLocalRecords(currentAccount.id, next); setRefinedDraft(null); flash("已采用并保存所选 AI 版本"); }}>采用这个版本</button></div></div>}</section>
+          <section className="card quick"><h2>快速记录</h2><textarea value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="今天完成了什么？推进了什么？解决了什么问题？\n例如：修改企业端首页方案，和开发确认了卡片展示逻辑。" /><div className="entry-options"><QuickProjectPicker value={entryProject} projects={projects} onChange={setEntryProject} onAdd={async (value) => { try { await addNamedItem("projects", value); } catch { /* keep the project available for interaction testing */ } setProjects((items) => items.includes(value) ? items : [...items, value]); setEntryProject(value); flash("项目已新增并选中"); }} /><label>修改时间<input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} /></label></div><div className="actions"><span className="save-note">保存原始内容，AI 将生成 3 个侧重点不同的版本</span><button className="primary" disabled={aiLoading} onClick={saveEntry}>{aiLoading ? "AI 正在理解…" : "保存并提炼"}</button></div>{refinedDraft && <div className="quick-ai-result"><div className="quick-original"><span>你的原始输入</span><p>{refinedDraft.title}</p></div><div className="quick-ai-head"><div><span>✦ AI 提炼 · 选择一个版本</span><small>结合项目和目标生成，均可修改</small></div></div><div className="ai-version-tabs">{refinementOptions.map((option, index) => <button key={option.label} className={selectedRefinement === index ? "selected" : ""} onClick={() => { setSelectedRefinement(index); setRefinedDraft({ ...refinedDraft, refinedTitle: option.text }); }}>{option.label}</button>)}</div><textarea value={refinedDraft.refinedTitle} onChange={(e) => setRefinedDraft({ ...refinedDraft, refinedTitle: e.target.value })} /><div className="record-ai-actions"><button className="text-button" onClick={() => setRefinedDraft(null)}>暂不使用</button><button className="replace-button" onClick={async () => { const updated = { ...refinedDraft, polished: true }; try { await updateWorkRecord(updated); } catch (error) { flash(authErrorMessage(error)); return; } const next = records.map(item => item.id === updated.id ? updated : item); setRecords(next); setRefinedDraft(null); flash("已采用并保存所选 AI 版本"); }}>采用这个版本</button></div></div>}</section>
           <section className="card recent"><div className="section-title"><h2>最近记录</h2><span>支持查看、修改和删除</span></div>{records.slice(0, 6).map((record) => {
             return <article className="record-card" key={record.id}>
-              <div className="record-row"><button className="record-main" onClick={() => setSelectedRecord(record)}><time>{record.time}</time><div><b>{recordDisplayTitle(record)}</b><p>{record.project === "未关联项目" ? "未选择项目" : `关联项目 · ${record.project}`}</p></div><span className="status">{record.polished ? "已采用提炼" : "已记录"}</span></button><button className="row-edit" onClick={() => setSelectedRecord(record)} aria-label="修改记录">编辑</button><button className="row-delete" onClick={async () => { if (!window.confirm("确定删除这条记录吗？")) return; try { if (!record.id.startsWith("demo-") && !record.id.startsWith("local-")) await deleteWorkRecord(record.id); } catch { /* remove the test copy locally */ } const next = records.filter(item => item.id !== record.id); setRecords(next); if (currentAccount) writeLocalRecords(currentAccount.id, next); flash("记录已删除"); }} aria-label="删除记录">删除</button></div>
+              <div className="record-row"><button className="record-main" onClick={() => setSelectedRecord(record)}><time>{record.time}</time><div><b>{recordDisplayTitle(record)}</b><p>{record.project === "未关联项目" ? "未选择项目" : `关联项目 · ${record.project}`}</p></div><span className="status">{record.polished ? "已采用提炼" : "已记录"}</span></button><button className="row-edit" onClick={() => setSelectedRecord(record)} aria-label="修改记录">编辑</button><button className="row-delete" onClick={async () => { if (!window.confirm("确定删除这条记录吗？")) return; try { await deleteWorkRecord(record.id); } catch (error) { flash(authErrorMessage(error)); return; } const next = records.filter(item => item.id !== record.id); setRecords(next); flash("记录已删除"); }} aria-label="删除记录">删除</button></div>
             </article>;
           })}</section>
         </>}
@@ -333,7 +301,7 @@ export default function Home() {
       </section>
 
       <nav className="bottom-nav">{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i>{item.icon}</i><span>{item.label}</span></button>)}</nav>
-      {showReportBuilder && <div className="drawer-layer report-drawer-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowReportBuilder(false); }}><aside className="report-builder-drawer"><div className="drawer-head"><div><span>从工作记录生成</span><h2>生成工作报告</h2></div><button className="icon-button" onClick={() => setShowReportBuilder(false)}>×</button></div><div className="drawer-body"><ReportBuilder report={activeReport} records={records} projects={projects} reportStyle={reportStyle} setReportStyle={setReportStyle} onSave={async (sourceCount) => {
+      {showReportBuilder && <div className="drawer-layer report-drawer-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowReportBuilder(false); }}><aside className="report-builder-drawer"><div className="drawer-head"><div><span>从工作记录生成</span><h2>生成工作报告</h2></div><button className="icon-button" onClick={() => setShowReportBuilder(false)}>×</button></div><div className="drawer-body"><ReportBuilder key={(activeReport?.id || "new") + ":" + (activeReport?.range || currentWeekRange())} report={activeReport} records={records} projects={projects} reportStyle={reportStyle} setReportStyle={setReportStyle} onSave={async (sourceCount) => {
           const range = activeReport?.range || currentWeekRange();
           const [rangeStart, rangeEnd] = range.split(" — ").map((item) => item.replaceAll(".", "-"));
           try {
@@ -345,7 +313,7 @@ export default function Home() {
             flash(`${activeReport?.type || "周报"}已保存`); setShowReportBuilder(false);
           } catch (error) { flash(authErrorMessage(error)); }
         }} /></div></aside></div>}
-      {selectedRecord && <RecordDrawer record={selectedRecord} projects={projects} goals={goals} onAddProject={async (value) => { try { await addNamedItem("projects", value); } catch { /* keep selectable in the test environment */ } setProjects([...projects, value]); }} onAddGoal={async (value) => { try { await addNamedItem("goals", value); } catch { /* keep selectable in the test environment */ } setGoals([...goals, value]); }} onClose={() => setSelectedRecord(null)} onSave={async (updated) => { try { if (!updated.id.startsWith("demo-") && !updated.id.startsWith("local-")) await updateWorkRecord(updated); } catch { /* persist the editable test copy below */ } const next = records.map((item) => item.id === updated.id ? updated : item); setRecords(next); if (currentAccount) writeLocalRecords(currentAccount.id, next); setSelectedRecord(null); flash("记录已更新"); }} />}
+      {selectedRecord && <RecordDrawer record={selectedRecord} projects={projects} goals={goals} onAddProject={async (value) => { try { await addNamedItem("projects", value); } catch { /* keep selectable in the test environment */ } setProjects([...projects, value]); }} onAddGoal={async (value) => { try { await addNamedItem("goals", value); } catch { /* keep selectable in the test environment */ } setGoals([...goals, value]); }} onClose={() => setSelectedRecord(null)} onSave={async (updated) => { try { await updateWorkRecord(updated); } catch (error) { flash(authErrorMessage(error)); return; } const next = records.map((item) => item.id === updated.id ? updated : item); setRecords(next); setSelectedRecord(null); flash("记录已更新"); }} />}
       {weeklyImportPreview && <div className="drawer-layer weekly-preview-layer"><section className="weekly-preview"><div className="drawer-head"><div><span>AI 拆分结果</span><h2>确认周报事项与日期</h2></div><button className="icon-button" onClick={() => setWeeklyImportPreview(null)}>×</button></div><p className="weekly-preview-help">每一条事项都会保存到对应日期。你可以取消勾选、修改日期和事项内容，再确认导入。</p><div className="weekly-preview-list">{weeklyImportPreview.items.map((item, index) => <article key={index} className={item.selected ? "selected" : ""}><input aria-label={`选择事项 ${index + 1}`} type="checkbox" checked={item.selected} onChange={(e) => setWeeklyImportPreview((preview) => preview ? { ...preview, items: preview.items.map((value, itemIndex) => itemIndex === index ? { ...value, selected: e.target.checked } : value) } : null)} /><label><span>日期</span><input type="date" value={item.date || ""} onChange={(e) => setWeeklyImportPreview((preview) => preview ? { ...preview, items: preview.items.map((value, itemIndex) => itemIndex === index ? { ...value, date: e.target.value || null } : value) } : null)} /></label><label className="weekly-content-field"><span>事项 {index + 1}</span><textarea value={item.content} onChange={(e) => setWeeklyImportPreview((preview) => preview ? { ...preview, items: preview.items.map((value, itemIndex) => itemIndex === index ? { ...value, content: e.target.value } : value) } : null)} /></label></article>)}</div><div className="weekly-preview-actions"><span>已选 {weeklyImportPreview.items.filter((item) => item.selected).length} / {weeklyImportPreview.items.length} 条</span><button className="secondary" onClick={() => setWeeklyImportPreview(null)}>取消</button><button className="primary" disabled={importingReports} onClick={() => void confirmWeeklyImport()}>{importingReports ? "正在写入…" : "确认并按日期导入"}</button></div></section></div>}
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
@@ -436,14 +404,14 @@ function isDateValue(value: string | null | undefined): value is string {
   return !Number.isNaN(new Date(`${value}T12:00:00`).getTime());
 }
 
-async function callAi<T>(action: "refine" | "parse-weekly" | "parse-kpi", payload: Record<string, unknown>): Promise<T> {
+async function callAi<T>(action: "refine" | "parse-weekly" | "parse-kpi" | "generate-report", payload: Record<string, unknown>): Promise<T> {
   const { data } = await supabase.auth.getSession();
   if (!data.session?.access_token) throw new Error("登录已失效，请重新登录");
   const response = await fetch("/api/ai", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${data.session.access_token}`,
+      Authorization: "Bearer " + data.session.access_token,
     },
     body: JSON.stringify({ action, ...payload }),
   });
@@ -452,34 +420,21 @@ async function callAi<T>(action: "refine" | "parse-weekly" | "parse-kpi", payloa
   return body as T;
 }
 
-async function extractFileText(file: File) {
-  const extension = file.name.split(".").pop()?.toLowerCase();
-  if (extension === "txt" || extension === "csv") return file.text();
-  if (extension === "docx") {
-    const mammoth = await import("mammoth/mammoth.browser");
-    return (await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() })).value;
-  }
-  if (extension === "xls" || extension === "xlsx") {
-    const XLSX = await import("xlsx");
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-    return workbook.SheetNames.map((name) => `【${name}】\n${XLSX.utils.sheet_to_csv(workbook.Sheets[name])}`).join("\n\n");
-  }
-  if (extension === "pdf") {
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
-    const pages: string[] = [];
-    for (let index = 1; index <= pdf.numPages; index += 1) {
-      const page = await pdf.getPage(index);
-      const content = await page.getTextContent();
-      pages.push(content.items.map((item) => "str" in item ? item.str : "").join(" "));
-    }
-    return pages.join("\n");
-  }
-  if (file.type.startsWith("image/")) {
-    const Tesseract = await import("tesseract.js");
-    return (await Tesseract.recognize(file, "chi_sim+eng")).data.text;
-  }
-  throw new Error("暂不支持该文件格式，请使用 PDF、DOCX、Excel、CSV、TXT 或图片");
+async function callAiFile<T>(action: "parse-weekly" | "parse-kpi", file: File, extra: Record<string, string> = {}): Promise<T> {
+  const { data } = await supabase.auth.getSession();
+  if (!data.session?.access_token) throw new Error("登录已失效，请重新登录");
+  const form = new FormData();
+  form.append("action", action);
+  form.append("file", file);
+  Object.entries(extra).forEach(([key, value]) => form.append(key, value));
+  const response = await fetch("/api/files", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + data.session.access_token },
+    body: form,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || "文件解析失败，请重试");
+  return body as T;
 }
 
 function currentWeekRange() {
@@ -655,43 +610,74 @@ function WeeklyRecords({ records, total, onClose, onOpen }: { records: RecordIte
 
 function ReportBuilder({ report, records, projects, reportStyle, setReportStyle, onSave }: { report: ReportItem | null; records: RecordItem[]; projects: string[]; reportStyle: string; setReportStyle: (s: string) => void; onSave: (sourceCount: number) => void }) {
   const [showSources, setShowSources] = useState(false);
-  const [generated, setGenerated] = useState(Boolean(report));
-  const weekStart = startOfWeek(new Date());
-  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
-  const weekRecords = records.filter((record) => {
-    const key = recordDateValue(record);
-    return key >= localDateValue(weekStart) && key <= localDateValue(weekEnd);
+  const [generated, setGenerated] = useState(false);
+  const [reportText, setReportText] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState("");
+  const range = report?.range || currentWeekRange();
+  const [rangeStart, rangeEnd] = range.split(" — ").map((value) => value.replaceAll(".", "-"));
+  const candidates = records.filter((record) => {
+    const date = recordDateValue(record);
+    return date >= rangeStart && date <= rangeEnd && !record.id.startsWith("demo-") && !record.id.startsWith("local-");
   });
-  const candidates = weekRecords.length ? weekRecords : records.slice(0, 6);
   const [selectedIds, setSelectedIds] = useState<string[]>(() => candidates.map((record) => record.id));
-  const type = report?.type || "周报";
-  const range = report?.range || `${localDateValue(weekStart).replaceAll("-", ".")} — ${localDateValue(weekEnd).replaceAll("-", ".")}`;
   const selectedRecords = candidates.filter((record) => selectedIds.includes(record.id));
-  const count = report?.count || selectedRecords.length;
-  const heading = report?.title || "第 30 周周报";
+  const type = report?.type || "周报";
+  const heading = report?.title || (type === "月报" ? "本月工作月报" : "本周工作周报");
   const toggleAll = () => setSelectedIds(selectedIds.length === candidates.length ? [] : candidates.map((record) => record.id));
+
+  async function generate(mode = reportStyle) {
+    if (!selectedRecords.length || generating) return;
+    setGenerating(true);
+    setGenerationError("");
+    try {
+      const result = await callAi<{ content: string }>("generate-report", {
+        reportType: type,
+        range,
+        mode,
+        records: selectedRecords.map((record) => ({
+          date: recordDateValue(record),
+          title: record.title,
+          refinedTitle: record.polished && record.refinedTitle ? record.refinedTitle : record.title,
+          project: record.project,
+          goal: record.goal,
+        })),
+      });
+      if (!result.content?.trim()) throw new Error("AI 没有返回报告内容");
+      setReportText(result.content.trim());
+      setGenerated(true);
+    } catch (error) {
+      setGenerationError(authErrorMessage(error));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   if (!generated) return <section className="report-source-step">
-    <div className="source-step-head"><div><span className="eyebrow">第一步 · 选择生成依据</span><h2>选择本周要写进报告的事项</h2><p>{range}，默认已全选，你可以取消不需要的记录。</p></div><button className="select-all-button" onClick={toggleAll}>{selectedIds.length === candidates.length ? "取消全选" : "全部选择"}</button></div>
-    <div className="source-selection-list">{candidates.map((record) => <label key={record.id} className={selectedIds.includes(record.id) ? "selected" : ""}><input type="checkbox" checked={selectedIds.includes(record.id)} onChange={() => setSelectedIds((ids) => ids.includes(record.id) ? ids.filter((id) => id !== record.id) : [...ids, record.id])} /><span className="custom-check">✓</span><time>{recordDateValue(record).replaceAll("-", ".")}</time><div><b>{recordDisplayTitle(record)}</b><p>{record.project === "未关联项目" ? "未选择项目" : record.project}{record.polished ? " · 已采用 AI 提炼" : record.refinedTitle ? " · 已有 AI 提炼" : ""}</p></div></label>)}</div>
-    <div className="source-step-footer"><span>已选择 <b>{selectedIds.length}</b> / {candidates.length} 条事项</span><button className="primary" disabled={!selectedIds.length} onClick={() => setGenerated(true)}>使用所选事项生成周报</button></div>
+    <div className="source-step-head"><div><span className="eyebrow">第一步 · 选择生成依据</span><h2>选择要写进报告的事项</h2><p>{range}，默认已全选，你可以取消不需要的记录。</p></div><button className="select-all-button" onClick={toggleAll}>{selectedIds.length === candidates.length ? "取消全选" : "全部选择"}</button></div>
+    <div className="source-selection-list">{candidates.map((record) => <label key={record.id} className={selectedIds.includes(record.id) ? "selected" : ""}><input type="checkbox" checked={selectedIds.includes(record.id)} onChange={() => setSelectedIds((ids) => ids.includes(record.id) ? ids.filter((id) => id !== record.id) : [...ids, record.id])} /><span className="custom-check">✓</span><time>{recordDateValue(record).replaceAll("-", ".")}</time><div><b>{recordDisplayTitle(record)}</b><p>{record.project === "未关联项目" ? "未选择项目" : record.project}</p></div></label>)}</div>
+    {!candidates.length && <div className="calendar-empty-state"><b>该时间范围没有可用记录</b><p>请先记录事项，或切换到有记录的日期范围。</p></div>}
+    {generationError && <p className="auth-error" role="alert">{generationError}</p>}
+    <div className="source-step-footer"><span>已选择 <b>{selectedIds.length}</b> / {candidates.length} 条事项</span><button className="primary" disabled={!selectedIds.length || generating} onClick={() => void generate()}>{generating ? "AI 正在生成…" : "使用所选事项生成" + type}</button></div>
   </section>;
+
   return <>
-    <div className="report-layout"><section className="range-card"><h2>总结范围</h2><div className="range-options">{["周报", "月报", "自定义总结"].map(x => <button key={x} className={type === x ? "selected" : ""}>{x.replace("总结", "")}</button>)}</div><label>时间范围<input value={range} readOnly /></label><label>关联项目<select><option>全部项目</option>{projects.map(project => <option key={project}>{project}</option>)}</select></label><button className="primary full">重新生成</button></section>
-      <section className="card report"><div className="report-top"><div><span className="eyebrow">{report?.status === "已确认" ? "正式报告" : "AI 生成稿"}</span><h2>{heading}</h2><button className="source-link" onClick={() => setShowSources(true)}>{count} 条原始记录 <span>查看生成依据 ›</span></button></div></div>
-        <div className="report-mode"><span>周报展示逻辑</span><div className="tabs">{["按照事项", "按照目标", "按照项目"].map(x => <button key={x} onClick={() => setReportStyle(x)} className={reportStyle === x ? "selected" : ""}>{x}</button>)}</div></div>
-        <ReportContent mode={reportStyle} /><div className="report-actions"><button className="secondary" onClick={() => setGenerated(false)}>重新选择事项</button><button className="secondary">导出</button><button className="primary" onClick={() => onSave(selectedRecords.length)}>保存{report?.status === "已确认" ? "修改" : `正式${type}`}</button></div></section></div>
-    {showSources && <SourceRecords records={selectedRecords} count={count} range={range} onClose={() => setShowSources(false)} />}
+    <div className="report-layout"><section className="range-card"><h2>总结范围</h2><div className="range-options">{["周报", "月报", "自定义总结"].map((value) => <button key={value} className={type === value ? "selected" : ""}>{value.replace("总结", "")}</button>)}</div><label>时间范围<input value={range} readOnly /></label><label>关联项目<select><option>全部项目</option>{projects.map((project) => <option key={project}>{project}</option>)}</select></label><button className="primary full" disabled={!selectedRecords.length || generating} onClick={() => void generate()}>{generating ? "AI 重新生成中…" : "重新生成"}</button></section>
+      <section className="card report"><div className="report-top"><div><span className="eyebrow">AI 生成稿</span><h2>{heading}</h2><button className="source-link" onClick={() => setShowSources(true)}>{selectedRecords.length} 条原始记录 <span>查看生成依据 ›</span></button></div></div>
+        <div className="report-mode"><span>报告展示逻辑</span><div className="tabs">{["按照事项", "按照目标", "按照项目"].map((value) => <button key={value} disabled={generating} onClick={() => { setReportStyle(value); void generate(value); }} className={reportStyle === value ? "selected" : ""}>{value}</button>)}</div></div>
+        {generationError && <p className="auth-error" role="alert">{generationError}</p>}
+        <ReportContent content={reportText} />
+        <div className="report-actions"><button className="secondary" onClick={() => { setGenerated(false); setGenerationError(""); }}>重新选择事项</button><button className="secondary">导出</button><button className="primary" disabled={generating || !reportText} onClick={() => onSave(selectedRecords.length)}>保存{report?.status === "已确认" ? "修改" : "正式" + type}</button></div></section></div>
+    {showSources && <SourceRecords records={selectedRecords} count={selectedRecords.length} range={range} onClose={() => setShowSources(false)} />}
   </>;
 }
 
-function ReportContent({ mode }: { mode: string }) {
-  if (mode === "按照目标") return <div className="report-copy" contentEditable suppressContentEditableWarning><h3>目标一：提升核心服务入口使用效率</h3><ul><li>完成企业端首页核心卡片方案迭代，重新梳理服务完成、待办与风险提醒的信息优先级。</li><li>明确自适应展示规则，为用户快速找到高频服务建立清晰路径。</li></ul><h3>目标二：推动 AI 能力进入真实业务流程</h3><ul><li>补充 AI 开票异常反馈流程，完善从发起、处理到结果反馈的业务闭环。</li></ul><h3>目标三：减少沟通与返工成本</h3><p>与产品和开发完成关键交互规则对齐，并沉淀验收口径。</p></div>;
-  if (mode === "按照项目") return <div className="report-copy" contentEditable suppressContentEditableWarning><h3>企业端首页改版</h3><ul><li>完成核心卡片方案迭代并明确内容优先级。</li><li>与开发对齐桌面、平板和手机端的响应式规则。</li></ul><h3>AI 开票</h3><ul><li>补充异常反馈路径和结果状态，完善业务闭环。</li></ul><h3>合规服务体验</h3><p>梳理风险提醒与服务日历的首页整合方向。</p></div>;
-  return <div className="report-copy" contentEditable suppressContentEditableWarning><h3>本周核心事项</h3><ol><li><b>首页方案迭代：</b>完成企业端首页核心卡片方案，明确服务完成、待办与风险提醒的信息优先级。</li><li><b>跨团队协作：</b>与产品和开发对齐交互规则，减少设计还原偏差，推动方案进入开发阶段。</li><li><b>流程完善：</b>补充 AI 开票异常反馈流程，完善从发起、处理到结果反馈的业务闭环。</li></ol><h3>下阶段事项</h3><p>跟进首页开发验收，完成开票异常流程的关键页面设计。</p></div>;
+function ReportContent({ content }: { content: string }) {
+  return <div className="report-copy" contentEditable suppressContentEditableWarning>{content.split(/\n+/).filter(Boolean).map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>;
 }
 
 function SourceRecords({ records, count, range, onClose }: { records: RecordItem[]; count: number; range: string; onClose: () => void }) {
-  const samples = [...records, { id: -1, time: "周三 11:20", title: "整理首页响应式规则与验收清单", project: "企业端首页改版", goal: "减少跨团队沟通与返工成本", polished: true }, { id: -2, time: "周二 16:40", title: "梳理风险提醒卡片的信息优先级", project: "合规服务体验", goal: "提升核心服务入口使用效率", polished: true }];
+  const samples = records;
   return <div className="drawer-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><aside className="record-drawer source-drawer" role="dialog" aria-modal="true"><div className="drawer-head"><div><span>{range}</span><h2>原始数据记录 · {count}</h2></div><button className="icon-button" onClick={onClose}>×</button></div><div className="source-note">以下记录是本次报告的生成依据，可返回工作台修改原始内容。</div><div className="drawer-body source-list">{samples.slice(0, Math.min(count, samples.length)).map(item => <article key={item.id}><time>{item.time}</time><b>{item.title}</b><div><span>{item.project}</span><span>{item.goal}</span></div></article>)}{count > samples.length && <div className="older-records">另有 {count - samples.length} 条记录已收起</div>}</div></aside></div>;
 }
 
@@ -719,12 +705,7 @@ function Profile({ projects, setProjects, onDone, onFlash }: { projects: string[
     if (file.size > 20 * 1024 * 1024) return onFlash("文件超过 20MB，请重新选择");
     setUploading(true);
     try {
-      const text = await extractFileText(file);
-      if (!text.trim()) throw new Error("文件中没有读取到可解析的文字");
-      const parsed = await callAi<{ role?: string; summary?: string; kpis: Array<{ title: string; details?: string[] }> }>("parse-kpi", {
-        fileName: file.name,
-        text,
-      });
+      const parsed = await callAiFile<{ role?: string; summary?: string; kpis: Array<{ title: string; details?: string[] }> }>("parse-kpi", file);
       const candidates = (parsed.kpis || []).filter((item) => item.title?.trim()).map((item) => ({
         id: `candidate-${crypto.randomUUID()}`,
         title: item.title.trim(),
