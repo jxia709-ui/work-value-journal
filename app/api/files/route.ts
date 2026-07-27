@@ -48,7 +48,8 @@ async function extractPdfText(file: File) {
 }
 
 async function extractDocxText(file: File) {
-  const mammoth = await import("mammoth");
+  const mammothModule = await import("mammoth");
+  const mammoth = mammothModule.default;
   const arrayBuffer = await file.arrayBuffer();
   const input = { arrayBuffer } as unknown as Parameters<typeof mammoth.extractRawText>[0];
   return compactText((await mammoth.extractRawText(input)).value);
