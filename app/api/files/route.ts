@@ -26,7 +26,7 @@ async function extractPdfText(file: File) {
       try {
         const content = await page.getTextContent();
         const text = content.items
-          .map((item) => {
+          .map((item: unknown) => {
             if (!item || typeof item !== "object" || !("str" in item)) return "";
             return String((item as { str?: unknown }).str || "");
           })
@@ -40,7 +40,7 @@ async function extractPdfText(file: File) {
       }
     }
   } finally {
-    pdf.cleanup();
+    await pdf.cleanup();
     await pdf.destroy();
   }
 
@@ -58,7 +58,7 @@ async function extractSpreadsheetText(file: File) {
   const XLSX = await import("xlsx");
   const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
   return compactText(workbook.SheetNames
-    .map((sheetName) => `【${sheetName}】\n${XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])}`)
+    .map((sheetName: string) => `【${sheetName}】\n${XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])}`)
     .join("\n\n"));
 }
 
