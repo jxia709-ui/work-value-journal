@@ -1,33 +1,76 @@
 import { NextRequest, NextResponse } from "next/server";
-import mammoth from "mammoth";
-import * as XLSX from "xlsx";
-import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
 
-export const runtime = "nodejs";
+type FileAction = "parse-weekly" | "parse-kpi";
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "未知错误");
+}
+
+function compactText(text: string) {
+  return text
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+}
+
+async function extractPdfText(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const { getDocumentProxy } = await import("unpdf");
+  const pdf = await getDocumentProxy(bytes);
+  const pages: string[] = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      try {
+        const content = await page.getTextContent();
+        const text = content.items
+          .map((item) => {
+            if (!item || typeof item !== "object" || !("str" in item)) return "";
+            return String((item as { str?: unknown }).str || "");
+          })
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (text) pages.push(`【第 ${pageNumber} 页】\n${text}`);
+      } finally {
+        page.cleanup();
+      }
+    }
+  } finally {
+    pdf.cleanup();
+    await pdf.destroy();
+  }
+
+  return compactText(pages.join("\n\n"));
+}
+
+async function extractDocxText(file: File) {
+  const mammoth = await import("mammoth");
+  const arrayBuffer = await file.arrayBuffer();
+  const input = { arrayBuffer } as unknown as Parameters<typeof mammoth.extractRawText>[0];
+  return compactText((await mammoth.extractRawText(input)).value);
+}
+
+async function extractSpreadsheetText(file: File) {
+  const XLSX = await import("xlsx");
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  return compactText(workbook.SheetNames
+    .map((sheetName) => `【${sheetName}】\n${XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])}`)
+    .join("\n\n"));
+}
 
 async function extractText(file: File) {
-  const buffer = Buffer.from(await file.arrayBuffer());
   const name = file.name.toLowerCase();
 
-  if (name.endsWith(".pdf")) {
-    const pdf = await getDocumentProxy(new Uint8Array(buffer));
-    const result = await extractPdfText(pdf, { mergePages: true });
-    return result.text;
-  }
-
-  if (name.endsWith(".docx")) {
-    return (await mammoth.extractRawText({ buffer })).value;
-  }
-
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
-    return workbook.SheetNames
-      .map((sheetName) => `【${sheetName}】\n${XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])}`)
-      .join("\n\n");
-  }
+  if (name.endsWith(".pdf")) return extractPdfText(file);
+  if (name.endsWith(".docx")) return extractDocxText(file);
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) return extractSpreadsheetText(file);
 
   if (name.endsWith(".txt") || name.endsWith(".csv")) {
-    return buffer.toString("utf8");
+    return compactText(new TextDecoder("utf-8").decode(await file.arrayBuffer()));
   }
 
   throw new Error("暂不支持该文件格式，请上传 PDF、DOCX、Excel、CSV 或 TXT");
@@ -35,9 +78,14 @@ async function extractText(file: File) {
 
 export async function POST(request: NextRequest) {
   try {
+    const authorization = request.headers.get("authorization");
+    if (!authorization) {
+      return NextResponse.json({ error: "请先登录后再上传文件" }, { status: 401 });
+    }
+
     const form = await request.formData();
     const file = form.get("file");
-    const action = String(form.get("action") || "");
+    const action = String(form.get("action") || "") as FileAction;
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "没有收到可解析的文件" }, { status: 400 });
@@ -49,8 +97,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "文件超过 20MB，请重新选择" }, { status: 413 });
     }
 
-    const text = await extractText(file);
-    if (!text.trim()) {
+    let text = "";
+    try {
+      text = await extractText(file);
+    } catch (error) {
+      return NextResponse.json(
+        { error: `文件文字读取失败：${errorMessage(error)}` },
+        { status: 422 },
+      );
+    }
+
+    if (!text) {
       return NextResponse.json({ error: "文件中没有读取到可解析的文字" }, { status: 422 });
     }
 
@@ -58,22 +115,25 @@ export async function POST(request: NextRequest) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: request.headers.get("authorization") || "",
+        authorization,
       },
       body: JSON.stringify({
         action,
         fileName: file.name,
-        text,
+        text: text.slice(0, 80_000),
         referenceDate: String(form.get("referenceDate") || ""),
       }),
     });
 
-    return new NextResponse(await aiResponse.text(), {
+    const responseText = await aiResponse.text();
+    return new NextResponse(responseText, {
       status: aiResponse.status,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json; charset=utf-8" },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "文件解析失败";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: `文件解析失败：${errorMessage(error)}` },
+      { status: 500 },
+    );
   }
 }
