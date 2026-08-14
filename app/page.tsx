@@ -34,6 +34,11 @@ type ParsedWeeklyItem = { date: string | null; content: string; project?: string
 type WeeklyImportPreview = { fileName: string; items: Array<ParsedWeeklyItem & { selected: boolean }> };
 type KpiItem = { id: string; title: string; details: string[] };
 
+function clientId(prefix: string) {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return `${prefix}-${uuid || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`;
+}
+
 function recordDisplayTitle(record: RecordItem) {
   return record.polished && record.refinedTitle.trim()
     ? record.refinedTitle
@@ -471,7 +476,7 @@ function authErrorMessage(error: unknown) {
 
 function RecordDrawer({ record, projects, goals, onAddProject, onAddGoal, onClose, onSave }: { record: RecordItem; projects: string[]; goals: string[]; onAddProject: (value: string) => void; onAddGoal: (value: string) => void; onClose: () => void; onSave: (record: RecordItem) => void }) {
   const [draft, setDraft] = useState<RecordItem>(() => ({
-    id: String(record.id || `local-${crypto.randomUUID()}`),
+    id: String(record.id || clientId("local")),
     time: record.time || "日期待补充",
     occurredAt: Number.isNaN(new Date(record.occurredAt || "").getTime()) ? new Date().toISOString() : record.occurredAt,
     title: record.title || "",
@@ -714,7 +719,7 @@ function Profile({ initialRole, initialKpis, projects, setProjects, onDone, onFl
     try {
       const parsed = await callAiFile<{ role?: string; summary?: string; kpis: Array<{ title: string; details?: string[] }> }>("parse-kpi", file);
       const candidates = (parsed.kpis || []).filter((item) => item.title?.trim()).map((item) => ({
-        id: `candidate-${crypto.randomUUID()}`,
+        id: clientId("candidate"),
         title: item.title.trim(),
         details: (item.details || []).filter(Boolean),
         selected: true,
@@ -734,7 +739,7 @@ function Profile({ initialRole, initialKpis, projects, setProjects, onDone, onFl
   function addKpi() {
     const title = newKpi.trim();
     if (!title) return;
-    setKpis([...kpis, { id: `kpi-${crypto.randomUUID()}`, title, details: [] }]);
+    setKpis([...kpis, { id: clientId("kpi"), title, details: [] }]);
     setNewKpi("");
   }
   function updateKpi(id: string, patch: Partial<KpiItem>) {
@@ -744,7 +749,7 @@ function Profile({ initialRole, initialKpis, projects, setProjects, onDone, onFl
     setKpis(kpis.map((item) => item.id === id ? { ...item, details: [...item.details, ""] } : item));
   }
   function confirmKpiCandidates() {
-    const selected = kpiCandidates.filter((item) => item.selected).map(({ id, title, details }) => ({ id: `kpi-${crypto.randomUUID()}`, title, details }));
+    const selected = kpiCandidates.filter((item) => item.selected).map(({ id, title, details }) => ({ id: clientId("kpi"), title, details }));
     if (!selected.length) return onFlash("请至少选择一项 KPI");
     setKpis(selected);
     setKpiCandidates([]);
