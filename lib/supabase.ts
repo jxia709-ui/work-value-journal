@@ -36,6 +36,17 @@ export type WorkspaceReport = {
   source_count: number;
 };
 
+export type WorkspaceKpi = {
+  id: string;
+  title: string;
+  details: string[];
+};
+
+export type WorkspaceProfile = {
+  role: string;
+  kpis: WorkspaceKpi[];
+};
+
 async function requireUser() {
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) throw new Error("登录已失效，请重新登录");
@@ -81,22 +92,47 @@ export function accountFromUser(user: User) {
 
 export async function loadWorkspace() {
   await requireUser();
-  const [records, projects, goals, reports] = await Promise.all([
+  const [profile, records, projects, goals, reports] = await Promise.all([
+    supabase.from("profiles").select("role,kpis").maybeSingle(),
     supabase.from("work_records").select("id,occurred_at,title,details,project,goal,polished").order("occurred_at", { ascending: false }),
     supabase.from("projects").select("name").order("created_at", { ascending: true }),
     supabase.from("goals").select("name").order("created_at", { ascending: true }),
     supabase.from("reports").select("id,title,report_date,report_type,status,range_start,range_end,source_count").order("report_date", { ascending: false }),
   ]);
+  throwIfError(profile.error, "读取工作档案失败");
   throwIfError(records.error, "读取工作记录失败");
   throwIfError(projects.error, "读取项目失败");
   throwIfError(goals.error, "读取目标失败");
   throwIfError(reports.error, "读取报告失败");
   return {
+    profile: {
+      role: String(profile.data?.role || ""),
+      kpis: Array.isArray(profile.data?.kpis) ? profile.data.kpis as WorkspaceKpi[] : [],
+    } satisfies WorkspaceProfile,
     records: (records.data ?? []) as WorkspaceRecord[],
     projects: (projects.data ?? []).map((item) => String(item.name)),
     goals: (goals.data ?? []).map((item) => String(item.name)),
     reports: (reports.data ?? []) as WorkspaceReport[],
   };
+}
+
+export async function saveWorkProfile(profile: WorkspaceProfile) {
+  const user = await requireUser();
+  const cleanKpis = profile.kpis
+    .map((kpi) => ({
+      id: kpi.id || `kpi-${crypto.randomUUID()}`,
+      title: kpi.title.trim(),
+      details: kpi.details.map((detail) => detail.trim()).filter(Boolean),
+    }))
+    .filter((kpi) => kpi.title);
+  const { error } = await supabase.from("profiles").upsert({
+    id: user.id,
+    role: profile.role.trim(),
+    kpis: cleanKpis,
+    updated_at: new Date().toISOString(),
+  });
+  throwIfError(error, "保存工作档案失败");
+  return { role: profile.role.trim(), kpis: cleanKpis };
 }
 
 export async function addWorkRecord(input: { title: string; details: string; project?: string; occurredAt: string }) {
