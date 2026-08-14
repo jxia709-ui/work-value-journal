@@ -29,8 +29,8 @@ export type WorkspaceReport = {
   id: string;
   title: string;
   report_date: string;
-  report_type: "鍛ㄦ姤" | "鏈堟姤" | "鑷畾涔夋€荤粨";
-  status: "宸茬‘璁? | "鑽夌";
+  report_type: "周报" | "月报" | "自定义总结";
+  status: "已确认" | "草稿";
   range_start: string;
   range_end: string;
   source_count: number;
@@ -38,7 +38,7 @@ export type WorkspaceReport = {
 
 async function requireUser() {
   const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) throw new Error("鐧诲綍宸插け鏁堬紝璇烽噸鏂扮櫥褰?);
+  if (error || !data.user) throw new Error("登录已失效，请重新登录");
   return data.user;
 }
 
@@ -66,16 +66,16 @@ export async function signUpWithPhone(name: string, phone: string, password: str
   const { data, error } = await supabase.auth.signUp({
     email: phoneEmail(normalizedPhone),
     password,
-    options: { data: { full_name: name || `鐢ㄦ埛 ${normalizedPhone.slice(-4)}`, phone: normalizedPhone } },
+    options: { data: { full_name: name || `用户 ${normalizedPhone.slice(-4)}`, phone: normalizedPhone } },
   });
   if (error) throw error;
-  if (!data.session) throw new Error("娉ㄥ唽鎴愬姛锛屼絾 Supabase 浠嶈姹傜‘璁ら偖绠便€傝鍏抽棴閭纭鍚庨噸璇曘€?);
+  if (!data.session) throw new Error("注册成功，但 Supabase 仍要求确认邮箱。请关闭邮箱确认后重试。");
   return data.user;
 }
 
 export function accountFromUser(user: User) {
   const phone = String(user.user_metadata.phone ?? user.email?.split("@")[0] ?? "");
-  const name = String(user.user_metadata.full_name ?? `鐢ㄦ埛 ${phone.slice(-4)}`);
+  const name = String(user.user_metadata.full_name ?? `用户 ${phone.slice(-4)}`);
   return { id: user.id, name, phone };
 }
 
@@ -87,10 +87,10 @@ export async function loadWorkspace() {
     supabase.from("goals").select("name").order("created_at", { ascending: true }),
     supabase.from("reports").select("id,title,report_date,report_type,status,range_start,range_end,source_count").order("report_date", { ascending: false }),
   ]);
-  throwIfError(records.error, "璇诲彇宸ヤ綔璁板綍澶辫触");
-  throwIfError(projects.error, "璇诲彇椤圭洰澶辫触");
-  throwIfError(goals.error, "璇诲彇鐩爣澶辫触");
-  throwIfError(reports.error, "璇诲彇鎶ュ憡澶辫触");
+  throwIfError(records.error, "读取工作记录失败");
+  throwIfError(projects.error, "读取项目失败");
+  throwIfError(goals.error, "读取目标失败");
+  throwIfError(reports.error, "读取报告失败");
   return {
     records: (records.data ?? []) as WorkspaceRecord[],
     projects: (projects.data ?? []).map((item) => String(item.name)),
@@ -114,8 +114,8 @@ export async function addWorkRecord(input: { title: string; details: string; pro
     .insert(payload)
     .select("id,occurred_at,title,details,project,goal,polished")
     .single();
-  throwIfError(error, "淇濆瓨宸ヤ綔璁板綍澶辫触");
-  if (!data) throw new Error("淇濆瓨宸ヤ綔璁板綍澶辫触锛氭暟鎹簱娌℃湁杩斿洖璁板綍");
+  throwIfError(error, "保存工作记录失败");
+  if (!data) throw new Error("保存工作记录失败：数据库没有返回记录");
   return data as WorkspaceRecord;
 }
 
@@ -130,48 +130,48 @@ export async function addImportedWorkRecords(items: { title: string; project?: s
 export async function updateWorkRecord(record: { id: string; title: string; refinedTitle: string; occurredAt: string; project: string; goal: string; polished: boolean }) {
   await requireUser();
   if (record.id.startsWith("demo-") || record.id.startsWith("local-")) {
-    throw new Error("杩欐潯璁板綍灏氭湭鍐欏叆浜戠锛岃閲嶆柊鍒涘缓鍚庡啀淇敼");
+    throw new Error("这条记录尚未写入云端，请重新创建后再修改");
   }
   const payload = {
     title: record.title,
     details: record.refinedTitle || null,
     occurred_at: record.occurredAt,
-    project: record.project === "鏈叧鑱旈」鐩? ? null : record.project,
-    goal: record.goal === "鏈叧鑱旂洰鏍? ? null : record.goal,
+    project: record.project === "未关联项目" ? null : record.project,
+    goal: record.goal === "未关联目标" ? null : record.goal,
     polished: record.polished,
   };
   const { error } = await supabase.from("work_records").update(payload).eq("id", record.id);
-  throwIfError(error, "鏇存柊宸ヤ綔璁板綍澶辫触");
+  throwIfError(error, "更新工作记录失败");
 }
 
 export async function deleteWorkRecord(id: string) {
   await requireUser();
   if (id.startsWith("demo-") || id.startsWith("local-")) {
-    throw new Error("杩欐潯璁板綍灏氭湭鍐欏叆浜戠锛屾棤娉曞垹闄や簯绔暟鎹?);
+    throw new Error("这条记录尚未写入云端，无法删除云端数据");
   }
   const { error } = await supabase.from("work_records").delete().eq("id", id);
-  throwIfError(error, "鍒犻櫎宸ヤ綔璁板綍澶辫触");
+  throwIfError(error, "删除工作记录失败");
 }
 
 export async function addNamedItem(table: "projects" | "goals", name: string) {
   const user = await requireUser();
   const value = name.trim();
-  if (!value) throw new Error("鍚嶇О涓嶈兘涓虹┖");
+  if (!value) throw new Error("名称不能为空");
   const { error } = await supabase.from(table).upsert(
     { user_id: user.id, name: value },
     { onConflict: "user_id,name" },
   );
-  throwIfError(error, `淇濆瓨${table === "projects" ? "椤圭洰" : "鐩爣"}澶辫触`);
+  throwIfError(error, `保存${table === "projects" ? "项目" : "目标"}失败`);
 }
 
 export async function replaceProjects(names: string[]) {
   const user = await requireUser();
   const cleanNames = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
   const { error: deleteError } = await supabase.from("projects").delete().eq("user_id", user.id);
-  throwIfError(deleteError, "鏇存柊椤圭洰澶辫触");
+  throwIfError(deleteError, "更新项目失败");
   if (!cleanNames.length) return;
   const { error } = await supabase.from("projects").insert(cleanNames.map((name) => ({ user_id: user.id, name })));
-  throwIfError(error, "鏇存柊椤圭洰澶辫触");
+  throwIfError(error, "更新项目失败");
 }
 
 export async function saveSourceFileMetadata(file: File, category: "profile" | "weekly_report") {
@@ -184,7 +184,7 @@ export async function saveSourceFileMetadata(file: File, category: "profile" | "
     category,
     status: "metadata_saved",
   });
-  throwIfError(error, "淇濆瓨鏂囦欢淇℃伅澶辫触");
+  throwIfError(error, "保存文件信息失败");
 }
 
 export async function saveReport(report: {
@@ -208,10 +208,10 @@ export async function saveReport(report: {
   };
   if (report.id) {
     const { error } = await supabase.from("reports").update(payload).eq("id", report.id);
-    throwIfError(error, "鏇存柊鎶ュ憡澶辫触");
+    throwIfError(error, "更新报告失败");
     return;
   }
   const { error } = await supabase.from("reports").insert({ ...payload, user_id: user.id });
-  throwIfError(error, "淇濆瓨鎶ュ憡澶辫触");
+  throwIfError(error, "保存报告失败");
 }
 
