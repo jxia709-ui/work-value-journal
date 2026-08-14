@@ -120,7 +120,7 @@ export async function saveWorkProfile(profile: WorkspaceProfile) {
   const user = await requireUser();
   const cleanKpis = profile.kpis
     .map((kpi) => ({
-      id: kpi.id || `kpi-${crypto.randomUUID()}`,
+      id: kpi.id || `kpi-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       title: kpi.title.trim(),
       details: kpi.details.map((detail) => detail.trim()).filter(Boolean),
     }))
