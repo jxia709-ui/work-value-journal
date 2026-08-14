@@ -140,8 +140,8 @@ async function callModel(action: AiAction, payload: AiPayload) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://lzwwfjsdxyqtswfvqmwf.supabase.co";
+    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "sb_publishable_z2_qLk2jsLRhx8yFKRjeMg_DhCyaskL";
     const authorization = request.headers.get("authorization");
     if (!supabaseUrl || !supabaseKey || !authorization) {
       return NextResponse.json({ error: "请先登录后再使用 AI 功能" }, { status: 401 });
