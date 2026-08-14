@@ -11,6 +11,7 @@ import {
   replaceProjects,
   saveReport,
   saveSourceFileMetadata,
+  saveWorkProfile,
   signInWithPhone,
   signUpWithPhone,
   supabase,
@@ -31,6 +32,7 @@ type UserAccount = { id: string; name: string; phone: string };
 type RefinementOption = { label: string; text: string };
 type ParsedWeeklyItem = { date: string | null; content: string; project?: string; goal?: string };
 type WeeklyImportPreview = { fileName: string; items: Array<ParsedWeeklyItem & { selected: boolean }> };
+type KpiItem = { id: string; title: string; details: string[] };
 
 function recordDisplayTitle(record: RecordItem) {
   return record.polished && record.refinedTitle.trim()
@@ -87,6 +89,8 @@ export default function Home() {
   const [selectedRecord, setSelectedRecord] = useState<RecordItem | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [goals, setGoals] = useState<string[]>([]);
+  const [profileRole, setProfileRole] = useState("");
+  const [profileKpis, setProfileKpis] = useState<KpiItem[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -98,6 +102,8 @@ export default function Home() {
         setReports([]);
         setProjects([]);
         setGoals([]);
+        setProfileRole("");
+        setProfileKpis([]);
         setAuthLoading(false);
         return;
       }
@@ -119,6 +125,8 @@ export default function Home() {
         setRecords(remoteRecords);
         setProjects(workspace.projects);
         setGoals(workspace.goals);
+        setProfileRole(workspace.profile.role);
+        setProfileKpis(workspace.profile.kpis);
         setReports(workspace.reports.map((report) => ({
           id: report.id,
           title: report.title,
@@ -133,6 +141,8 @@ export default function Home() {
         setReports([]);
         setProjects([]);
         setGoals([]);
+        setProfileRole("");
+        setProfileKpis([]);
         flash("云端数据加载失败：" + authErrorMessage(error));
       } finally {
         if (active) setAuthLoading(false);
@@ -297,7 +307,7 @@ export default function Home() {
         </>}
 
         {view === "history" && <HistoryCalendar records={records} reports={reports} onOpen={setSelectedRecord} onOpenReport={(report) => { setActiveReport(report); setShowReportBuilder(true); }} onGenerateWeek={(range, count) => { setActiveReport({ id: "", title: "本周工作周报", date: localDateValue(new Date()), type: "周报", status: "草稿", range, count }); setShowReportBuilder(true); }} onGenerateMonth={(range, count) => { setActiveReport({ id: "", title: "本月工作月报", date: localDateValue(new Date()), type: "月报", status: "草稿", range, count }); setShowReportBuilder(true); }} />}
-        {view === "profile" && <Profile projects={projects} setProjects={async (items) => { setProjects(items); try { await replaceProjects(items); } catch { flash("已在测试环境更新项目"); } }} onDone={() => flash("工作档案已更新")} onFlash={flash} />}
+        {view === "profile" && <Profile initialRole={profileRole} initialKpis={profileKpis} projects={projects} setProjects={async (items) => { setProjects(items); try { await replaceProjects(items); } catch { flash("项目更新失败"); } }} onDone={async (role, kpis) => { const saved = await saveWorkProfile({ role, kpis }); setProfileRole(saved.role); setProfileKpis(saved.kpis); flash("工作档案已保存到云端"); }} onFlash={flash} />}
       </section>
 
       <nav className="bottom-nav">{nav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i>{item.icon}</i><span>{item.label}</span></button>)}</nav>
@@ -685,21 +695,18 @@ function History({ reports, onOpen }: { reports: ReportItem[]; onOpen: (report: 
   return <><div className="filters"><button>全部类型⌄</button><button>2026 年⌄</button><button>全部项目⌄</button><button>全部状态⌄</button></div><section className="card report-list">{reports.length ? reports.map((report) => <button key={report.id} onClick={() => onOpen(report)}><span className="doc">▤</span><div><b>{report.title}</b><p>{report.date} · {report.type} · {report.range} · {report.count} 条记录</p></div><em className={report.status === "草稿" ? "draft" : "status"}>{report.status}</em><i>›</i></button>) : <div className="older-records">还没有历史报告，先生成一份周报吧</div>}</section></>;
 }
 
-type KpiItem = { id: string; title: string; details: string[] };
 type KpiCandidate = KpiItem & { selected: boolean };
 
-function Profile({ projects, setProjects, onDone, onFlash }: { projects: string[]; setProjects: (items: string[]) => void; onDone: () => void; onFlash: (message: string) => void }) {
+function Profile({ initialRole, initialKpis, projects, setProjects, onDone, onFlash }: { initialRole: string; initialKpis: KpiItem[]; projects: string[]; setProjects: (items: string[]) => void; onDone: (role: string, kpis: KpiItem[]) => Promise<void>; onFlash: (message: string) => void }) {
   const [profileFile, setProfileFile] = useState("");
   const [uploading, setUploading] = useState(false);
   const [newProject, setNewProject] = useState("");
-  const [role, setRole] = useState("用户体验设计师");
+  const [role, setRole] = useState(initialRole);
   const [newKpi, setNewKpi] = useState("");
   const [kpiCandidates, setKpiCandidates] = useState<KpiCandidate[]>([]);
   const [kpiSummary, setKpiSummary] = useState("");
-  const [kpis, setKpis] = useState<KpiItem[]>([
-    { id: "kpi-1", title: "提升核心服务入口使用效率", details: ["完成企业端首页核心服务入口改版", "关键任务操作路径缩短，提升完成效率"] },
-    { id: "kpi-2", title: "推动 AI 能力进入真实业务流程", details: ["完善 AI 开票从发起到异常反馈的完整闭环"] },
-  ]);
+  const [kpis, setKpis] = useState<KpiItem[]>(initialKpis);
+  const [saving, setSaving] = useState(false);
   async function uploadProfile(file?: File) {
     if (!file) return;
     if (file.size > 20 * 1024 * 1024) return onFlash("文件超过 20MB，请重新选择");
@@ -746,7 +753,7 @@ function Profile({ projects, setProjects, onDone, onFlash }: { projects: string[
   return <>
     <div className="profile-grid">
       <section className="card upload"><span>⇧</span><h2>上传 KPI / OKR / 岗位职责</h2><p>支持 PDF、Word（DOCX）、Excel，单个文件不超过 20MB</p><label className="primary file-button">{uploading ? "AI 正在解析…" : "选择文件"}<input type="file" accept=".pdf,.docx,.xls,.xlsx" onChange={(e) => { void uploadProfile(e.target.files?.[0]); e.currentTarget.value = ""; }} /></label>{profileFile && <div className="upload-success"><span>✓</span><div><b>{profileFile}</b><small>{kpiCandidates.length ? `AI 已识别 ${kpiCandidates.length} 项，等待确认` : "解析结果已处理"}</small></div><button onClick={() => { setProfileFile(""); setKpiCandidates([]); }}>移除</button></div>}{kpiCandidates.length > 0 && <div className="kpi-review"><div className="kpi-review-head"><div><b>选择要填入的 KPI</b><p>{kpiSummary}</p></div><span>{kpiCandidates.filter((item) => item.selected).length}/{kpiCandidates.length} 已选</span></div>{kpiCandidates.map((candidate, index) => <article key={candidate.id} className={candidate.selected ? "selected" : ""}><label><input type="checkbox" checked={candidate.selected} onChange={(e) => setKpiCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, selected: e.target.checked } : item))} /><span>选择</span></label><div><small>KPI {index + 1}</small><input value={candidate.title} onChange={(e) => setKpiCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, title: e.target.value } : item))} />{candidate.details.map((detail, detailIndex) => <input key={detailIndex} className="candidate-detail" value={detail} onChange={(e) => setKpiCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, details: item.details.map((value, i) => i === detailIndex ? e.target.value : value) } : item))} />)}</div></article>)}<div className="kpi-review-actions"><button className="secondary" onClick={() => setKpiCandidates([])}>取消</button><button className="primary" onClick={confirmKpiCandidates}>确认填入 KPI</button></div></div>}</section>
-      <section className="card goals profile-background"><div className="profile-background-head"><div><span className="eyebrow">AI 已提取</span><h2>你的工作背景</h2></div><label className="role-field">当前岗位<input value={role} onChange={(e) => setRole(e.target.value)} /></label></div><div className="kpi-field"><div className="field-heading"><label>KPI</label><small>支持按层级添加关键结果或拆解项</small></div><div className="kpi-list">{kpis.map((kpi, kpiIndex) => <article className="kpi-item" key={kpi.id}><div className="kpi-main"><b>KPI {kpiIndex + 1}</b><input value={kpi.title} onChange={(e) => updateKpi(kpi.id, { title: e.target.value })} /><button aria-label={`删除 KPI ${kpiIndex + 1}`} onClick={() => setKpis(kpis.filter((item) => item.id !== kpi.id))}>删除</button></div><div className="kpi-details">{kpi.details.map((detail, detailIndex) => <div key={`${kpi.id}-${detailIndex}`}><span>{detailIndex + 1}.</span><input value={detail} onChange={(e) => updateKpi(kpi.id, { details: kpi.details.map((item, index) => index === detailIndex ? e.target.value : item) })} placeholder="输入 KPI 拆解项" /><button aria-label="删除拆解项" onClick={() => updateKpi(kpi.id, { details: kpi.details.filter((_, index) => index !== detailIndex) })}>×</button></div>)}</div><button className="add-detail" onClick={() => addKpiDetail(kpi.id)}>＋ 添加拆解项</button></article>)}</div><div className="project-add"><input value={newKpi} onChange={(e) => setNewKpi(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addKpi(); } }} placeholder="输入新的 KPI" /><button onClick={addKpi}>＋ 添加 KPI</button></div></div><div className="project-field"><label>重点项目</label><div className="project-tags">{projects.map(project => <span key={project}>{project}<button aria-label={`删除${project}`} onClick={() => deleteProject(project)}>×</button></span>)}</div><div className="project-add"><input value={newProject} onChange={(e) => setNewProject(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addProject(); } }} placeholder="输入新项目名称" /><button onClick={addProject}>＋ 添加项目</button></div><small>这些项目会同步到周报的项目选择中</small></div><button className="primary" onClick={onDone}>确认并更新档案</button></section>
+      <section className="card goals profile-background"><div className="profile-background-head"><div><span className="eyebrow">AI 已提取</span><h2>你的工作背景</h2></div><label className="role-field">当前岗位<input value={role} onChange={(e) => setRole(e.target.value)} /></label></div><div className="kpi-field"><div className="field-heading"><label>KPI</label><small>支持按层级添加关键结果或拆解项</small></div><div className="kpi-list">{kpis.map((kpi, kpiIndex) => <article className="kpi-item" key={kpi.id}><div className="kpi-main"><b>KPI {kpiIndex + 1}</b><input value={kpi.title} onChange={(e) => updateKpi(kpi.id, { title: e.target.value })} /><button aria-label={`删除 KPI ${kpiIndex + 1}`} onClick={() => setKpis(kpis.filter((item) => item.id !== kpi.id))}>删除</button></div><div className="kpi-details">{kpi.details.map((detail, detailIndex) => <div key={`${kpi.id}-${detailIndex}`}><span>{detailIndex + 1}.</span><input value={detail} onChange={(e) => updateKpi(kpi.id, { details: kpi.details.map((item, index) => index === detailIndex ? e.target.value : item) })} placeholder="输入 KPI 拆解项" /><button aria-label="删除拆解项" onClick={() => updateKpi(kpi.id, { details: kpi.details.filter((_, index) => index !== detailIndex) })}>×</button></div>)}</div><button className="add-detail" onClick={() => addKpiDetail(kpi.id)}>＋ 添加拆解项</button></article>)}</div><div className="project-add"><input value={newKpi} onChange={(e) => setNewKpi(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addKpi(); } }} placeholder="输入新的 KPI" /><button onClick={addKpi}>＋ 添加 KPI</button></div></div><div className="project-field"><label>重点项目</label><div className="project-tags">{projects.map(project => <span key={project}>{project}<button aria-label={`删除${project}`} onClick={() => deleteProject(project)}>×</button></span>)}</div><div className="project-add"><input value={newProject} onChange={(e) => setNewProject(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addProject(); } }} placeholder="输入新项目名称" /><button onClick={addProject}>＋ 添加项目</button></div><small>这些项目会同步到周报的项目选择中</small></div><button className="primary" disabled={saving} onClick={async () => { setSaving(true); try { await onDone(role, kpis); } catch (error) { onFlash(authErrorMessage(error)); } finally { setSaving(false); } }}>{saving ? "正在保存…" : "确认并更新档案"}</button></section>
     </div>
   </>;
 }
