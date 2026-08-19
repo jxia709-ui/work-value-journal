@@ -35,6 +35,15 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        <footer className="site-record-footer">
+          <a
+            href="https://beian.miit.gov.cn/"
+            target="_blank"
+            rel="noreferrer"
+          >
+            蜀ICP备2026047484号-1
+          </a>
+        </footer>
       </body>
     </html>
   );
