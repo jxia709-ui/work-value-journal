@@ -1,13 +1,17 @@
 import { createClient, type User } from "@supabase/supabase-js";
 
-const supabaseUrl =
+const directSupabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL ??
   "https://lzwwfjsdxyqtswfvqmwf.supabase.co";
+const supabaseUrl =
+  typeof window !== "undefined"
+    ? `${window.location.origin}/supabase`
+    : directSupabaseUrl;
 const supabaseKey =
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
   "sb_publishable_z2_qLk2jsLRhx8yFKRjeMg_DhCyaskL";
 
-export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
+export const isSupabaseConfigured = Boolean(directSupabaseUrl && supabaseKey);
 
 export const supabase = createClient(
   supabaseUrl || "https://placeholder.supabase.co",
